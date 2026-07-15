@@ -1,10 +1,29 @@
-const LUMA_BASE = 'https://public-api.lu.ma';
-const API_KEY   = process.env.LUMA_API_KEY!;
+import fs from 'fs';
+import path from 'path';
 
-const lumaHeaders = {
-  'x-luma-api-key': API_KEY,
-  'Accept': 'application/json',
-};
+// Load .env.local for CLI scripts
+const envPath = path.resolve(process.cwd(), '.env.local');
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const k = trimmed.slice(0, eq).trim();
+    const v = trimmed.slice(eq + 1).trim();
+    if (k && !process.env[k]) process.env[k] = v;
+  }
+}
+
+const LUMA_BASE = 'https://public-api.lu.ma';
+
+// Read at call time so CLI scripts can load env before this module is used
+function lumaHeaders() {
+  return {
+    'x-luma-api-key': process.env.LUMA_API_KEY!,
+    'Accept': 'application/json',
+  };
+}
 
 // Simple rate limiter: max 120 req/min (2/sec)
 let lastCallAt = 0;
@@ -18,7 +37,7 @@ async function throttle() {
 
 async function lumaFetch(path: string, retries = 3): Promise<any> {
   await throttle();
-  const res = await fetch(`${LUMA_BASE}${path}`, { headers: lumaHeaders });
+  const res = await fetch(`${LUMA_BASE}${path}`, { headers: lumaHeaders() });
 
   if (res.status === 429 && retries > 0) {
     const retryAfter = parseInt(res.headers.get('retry-after') ?? '5') * 1000;
