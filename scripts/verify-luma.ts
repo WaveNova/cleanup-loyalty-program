@@ -25,7 +25,8 @@ if (fs.existsSync(envPath)) {
 }
 
 const API_KEY = process.env.LUMA_API_KEY!;
-const BASE    = 'https://public-api.lu.ma';
+const BASE    = 'https://public-api.luma.com';  // canonical domain (was lu.ma)
+const BASE_OLD = 'https://public-api.lu.ma';     // legacy, kept for comparison
 
 const TEST_EVENT_ID  = 'evt-k83erY5Behw6QdH';
 const TEST_GUEST_KEY = 'g-8zkLTGQeclOsZJE'; // pk from https://luma.com/e/ticket/evt-...?pk=g-...
@@ -193,26 +194,36 @@ async function testGuestKeyLookupAPI() {
   console.log('\n[3/5] QR Key Lookup via API...');
   const sec: Section = { title: '3a. QR Key API Lookup', status: 'FAIL', notes: [] };
 
-  const candidates = [
-    // Standard guest get endpoints
-    `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&guest_api_id=${TEST_GUEST_KEY}`,
-    `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&api_id=${TEST_GUEST_KEY}`,
-    // Direct guest endpoints
-    `/public/v1/guest/get?api_id=${TEST_GUEST_KEY}`,
-    `/public/v1/guest/get?guest_api_id=${TEST_GUEST_KEY}`,
-    `/public/v1/guest?api_id=${TEST_GUEST_KEY}`,
-    // Check-in endpoint (may return guest info)
-    `/public/v1/event/check-in?event_api_id=${TEST_EVENT_ID}&guest_api_id=${TEST_GUEST_KEY}`,
-    // pk-specific patterns
-    `/public/v1/guest/get?pk=${TEST_GUEST_KEY}`,
-    `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&pk=${TEST_GUEST_KEY}`,
+  // PRD-suggested endpoint first (luma.com domain, new path)
+  const newBaseCandidate = async (path: string) => {
+    const url = `${BASE}${path}`;
+    console.log(`  GET ${url}`);
+    try {
+      const r = await fetch(url, { headers });
+      const data = await r.json().catch(() => null);
+      return { ok: r.ok, status: r.status, data };
+    } catch (e) { return { ok: false, status: 0, data: { error: String(e) } }; }
+  };
+
+  const candidates: Array<{ path: string; base?: string }> = [
+    // PRD-suggested endpoint (primary)
+    { path: `/v1/events/guests/get?event_id=${TEST_EVENT_ID}&id=${TEST_GUEST_KEY}`, base: BASE },
+    // Legacy lu.ma paths
+    { path: `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&api_id=${TEST_GUEST_KEY}`, base: BASE_OLD },
+    { path: `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&api_id=${TEST_GUEST_KEY}`, base: BASE },
+    { path: `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&guest_api_id=${TEST_GUEST_KEY}`, base: BASE_OLD },
+    { path: `/public/v1/guest/get?api_id=${TEST_GUEST_KEY}`, base: BASE_OLD },
+    { path: `/public/v1/event/get-guest?event_api_id=${TEST_EVENT_ID}&pk=${TEST_GUEST_KEY}`, base: BASE_OLD },
   ];
 
-  for (const p of candidates) {
-    const res = await lumaGet(p);
+  for (const { path, base = BASE } of candidates) {
+    const url = `${base}${path}`;
+    console.log(`  GET ${url}`);
+    const r = await fetch(url, { headers });
+    const res = { ok: r.ok, status: r.status, data: await r.json().catch(() => null) };
     if (res.ok) {
       sec.status = 'PASS';
-      sec.notes.push(`✓ Working endpoint: ${p}`);
+      sec.notes.push(`✓ Working endpoint: ${url}`);
       const d = res.data as any;
       const guest = d?.guest ?? d?.data ?? d;
       sec.notes.push(`Response top-level keys: ${Object.keys(d ?? {}).join(', ')}`);
@@ -226,7 +237,7 @@ async function testGuestKeyLookupAPI() {
       sec.raw = redact(res.data);
       break;
     } else {
-      sec.notes.push(`  ${p.replace(BASE, '')} → HTTP ${res.status}`);
+      sec.notes.push(`  ${url} → HTTP ${res.status}`);
     }
   }
 

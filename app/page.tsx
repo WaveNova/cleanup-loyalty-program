@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 const SHADOW = process.env.NEXT_PUBLIC_SHADOW_MODE === 'true';
 
 interface LumaEvent {
-  id: string;           // DB UUID
+  id: string;
   luma_event_id: string;
   name: string;
   event_date: string;
@@ -17,7 +17,6 @@ export default function SetupPage() {
   const router = useRouter();
   const [events, setEvents]     = useState<LumaEvent[]>([]);
   const [eventId, setEventId]   = useState('');
-  const [station, setStation]   = useState('A');
   const [passcode, setPasscode] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
@@ -26,18 +25,18 @@ export default function SetupPage() {
     fetch('/api/events')
       .then(r => r.json())
       .then(d => {
-        setEvents(d.events ?? []);
-        if (d.events?.length > 0) setEventId(d.events[0].id);
+        const evts: LumaEvent[] = d.events ?? [];
+        setEvents(evts);
+        // Auto-select today's event if available
+        const today = new Date().toISOString().slice(0, 10);
+        const todayEvt = evts.find(e => e.event_date === today);
+        setEventId(todayEvt?.id ?? evts[0]?.id ?? '');
       })
       .catch(() => setError('無法載入活動列表'));
   }, []);
 
   async function handleStart() {
-    if (!eventId || !station || !passcode) {
-      setError('請填寫所有欄位');
-      return;
-    }
-
+    if (!eventId || !passcode) { setError('請填寫所有欄位'); return; }
     setLoading(true);
     setError('');
 
@@ -47,16 +46,11 @@ export default function SetupPage() {
       body: JSON.stringify({ passcode }),
     });
 
-    if (!res.ok) {
-      setError('通行碼錯誤');
-      setLoading(false);
-      return;
-    }
+    if (!res.ok) { setError('通行碼錯誤'); setLoading(false); return; }
 
     const selected = events.find(e => e.id === eventId)!;
     sessionStorage.setItem('wn_event', JSON.stringify(selected));
-    sessionStorage.setItem('wn_station', station);
-
+    sessionStorage.setItem('wn_authed', '1');
     router.push('/scan');
   }
 
@@ -72,7 +66,7 @@ export default function SetupPage() {
 
       <div style={{ padding: '1.5rem 0 1rem' }}>
         <h1>🌊 WaveNova 秤重站</h1>
-        <p className="text-muted mt-1">開站前請選擇今日活動與站別</p>
+        <p className="text-muted mt-1">選擇今日活動並輸入通行碼</p>
       </div>
 
       <div className="card">
@@ -86,22 +80,6 @@ export default function SetupPage() {
               </option>
             ))}
           </select>
-        </div>
-
-        <div className="mb-2">
-          <label>站別</label>
-          <div className="row">
-            {['A', 'B', 'C'].map(s => (
-              <button
-                key={s}
-                className={`btn ${station === s ? 'btn-navy' : 'btn-ghost'}`}
-                style={{ flex: 1, minHeight: 52 }}
-                onClick={() => setStation(s)}
-              >
-                {s} 站
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="mb-2">
@@ -126,6 +104,14 @@ export default function SetupPage() {
           {loading ? '開站中…' : '開始'}
         </button>
       </div>
+
+      <button
+        className="btn btn-ghost"
+        onClick={() => router.push('/stats')}
+        style={{ marginTop: '0.5rem' }}
+      >
+        📊 戰況頁
+      </button>
     </div>
   );
 }

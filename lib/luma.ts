@@ -15,7 +15,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const LUMA_BASE = 'https://public-api.lu.ma';
+const LUMA_BASE = 'https://public-api.luma.com';
 
 // Read at call time so CLI scripts can load env before this module is used
 function lumaHeaders() {
@@ -89,11 +89,24 @@ export function extractPk(url: string): string | null {
   }
 }
 
-/** Get a guest by the g- pk from a scanned QR code */
+/** Get a guest by the g- pk from a scanned QR code.
+ *  New endpoint accepts the QR pk directly via `id=` param and
+ *  returns flat fields (user_name/user_email) — normalize to LumaGuest shape. */
 export async function getGuestByPk(eventId: string, pk: string): Promise<LumaGuest> {
-  const qs = new URLSearchParams({ event_api_id: eventId, api_id: pk });
-  const data = await lumaFetch(`/public/v1/event/get-guest?${qs}`);
-  return data.guest as LumaGuest;
+  const qs = new URLSearchParams({ event_id: eventId, id: pk });
+  const data = await lumaFetch(`/v1/events/guests/get?${qs}`);
+  return {
+    ...data,
+    api_id:               data.api_id ?? data.id ?? pk,
+    name:                 data.user_name  ?? data.name  ?? '',
+    email:                data.user_email ?? data.email ?? '',
+    user_api_id:          data.user_api_id ?? data.user_id ?? '',
+    checked_in_at:        data.checked_in_at ?? null,
+    check_in_qr_code:     data.check_in_qr_code ?? '',
+    event_tickets:        data.event_tickets ?? [],
+    event_ticket:         data.event_ticket ?? null,
+    registration_answers: data.registration_answers ?? {},
+  } as LumaGuest;
 }
 
 /** Paginate all guests for an event */

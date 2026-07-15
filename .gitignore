@@ -3,3 +3,4 @@
 .next/
 node_modules/
 verification-report.md
+.vercel

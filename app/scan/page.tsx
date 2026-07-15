@@ -5,12 +5,9 @@ import { useRouter } from 'next/navigation';
 
 const SHADOW = process.env.NEXT_PUBLIC_SHADOW_MODE === 'true';
 
-interface EventInfo {
-  id: string;
-  luma_event_id: string;
-  name: string;
-  event_date: string;
-}
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface EventInfo { id: string; luma_event_id: string; name: string; event_date: string; }
 
 interface ScanEntry {
   pk:           string;
@@ -20,130 +17,184 @@ interface ScanEntry {
   actual_count: number;
 }
 
-interface QueueItem {
-  client_uuid:     string;
-  event_db_id:     string;
-  luma_event_id:   string;
-  station:         string;
-  total_weight_kg: number;
-  shadow:          boolean;
-  scans:           ScanEntry[];
-  retries:         number;
+interface GroupResult { group_no: number; headcount: number; weight_kg: number; session_id: string; }
+interface GroupInfo   { group_id: string; group_no: number; headcount: number; total_weight: number; }
+interface Toast       { msg: string; type: 'ok' | 'err' | 'info'; }
+
+type Mode        = 'home' | 'checkin' | 'reweigh';
+type ReweighStep = 'input' | 'confirm' | 'done';
+
+interface CheckinQueueItem {
+  type:           'checkin';
+  client_uuid:    string;
+  event_db_id:    string;
+  luma_event_id:  string;
+  weight_kg:      number;
+  shadow:         boolean;
+  headcount:      number;
+  scans:          ScanEntry[];
+  local_group_no: number;
 }
 
-const QUEUE_KEY = 'wn_offline_queue';
+interface ReweighQueueItem {
+  type:         'reweigh';
+  client_uuid:  string;
+  event_db_id:  string;
+  group_no:     number;
+  weight_kg:    number;
+}
+
+type QueueItem = CheckinQueueItem | ReweighQueueItem;
+
+// ── Local storage helpers ────────────────────────────────────────────────────
+
+const QUEUE_KEY  = 'wn_queue';
+const GROUP_KEY  = 'wn_groups';
 
 function loadQueue(): QueueItem[] {
   try { return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]'); } catch { return []; }
 }
+function saveQueue(q: QueueItem[]) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
 
-function saveQueue(q: QueueItem[]) {
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+function loadGroupCache(eid: string): Record<number, GroupInfo> {
+  try { return JSON.parse(localStorage.getItem(GROUP_KEY) ?? '{}')[eid] ?? {}; } catch { return {}; }
+}
+function saveGroupCache(eid: string, g: Record<number, GroupInfo>) {
+  try {
+    const all = JSON.parse(localStorage.getItem(GROUP_KEY) ?? '{}');
+    all[eid] = g;
+    localStorage.setItem(GROUP_KEY, JSON.stringify(all));
+  } catch {}
 }
 
-function newUUID() {
-  return crypto.randomUUID();
+function nextLocalGroupNo(eid: string): number {
+  const g = loadGroupCache(eid);
+  const ns = Object.keys(g).map(Number);
+  return ns.length ? Math.max(...ns) + 1 : 1;
 }
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 export default function ScanPage() {
   const router = useRouter();
 
+  // ── common
   const [event, setEvent]         = useState<EventInfo | null>(null);
-  const [station, setStation]     = useState('A');
   const [online, setOnline]       = useState(true);
   const [queueLen, setQueueLen]   = useState(0);
   const [offlineCache, setOfflineCache] = useState<Record<string, { name: string; email: string; ticket_count: number }>>({});
+  const [toast, setToast]         = useState<Toast | null>(null);
 
-  // Per-group state
-  const [weight, setWeight]       = useState('');
-  const [scans, setScans]         = useState<ScanEntry[]>([]);
-  const [scanning, setScanning]   = useState(false);
-  const [resolving, setResolving] = useState(false);
-  const [submitMsg, setSubmitMsg] = useState('');
-  const [searchQ, setSearchQ]     = useState('');
+  // ── mode
+  const [mode, setMode] = useState<Mode>('home');
 
-  // Search results from offline cache
-  const searchResults = searchQ.length >= 2
-    ? Object.entries(offlineCache)
-        .filter(([, g]) =>
-          g.name.toLowerCase().includes(searchQ.toLowerCase()) ||
-          g.email.toLowerCase().includes(searchQ.toLowerCase())
-        )
-        .slice(0, 8)
-    : [];
+  // ── check-in
+  const [ciScans, setCiScans]           = useState<ScanEntry[]>([]);
+  const [ciWeight, setCiWeight]         = useState('');
+  const [ciResolving, setCiResolving]   = useState(false);
+  const [ciSubmitting, setCiSubmitting] = useState(false);
+  const [ciResult, setCiResult]         = useState<GroupResult | null>(null);
+  const [ciSearchQ, setCiSearchQ]       = useState('');
+  const [ciScanning, setCiScanning]     = useState(false);
 
-  // Setup on mount
+  // ── re-weigh
+  const [rwGroupNo, setRwGroupNo]         = useState('');
+  const [rwGroupInfo, setRwGroupInfo]     = useState<GroupInfo | null>(null);
+  const [rwWeight, setRwWeight]           = useState('');
+  const [rwStep, setRwStep]               = useState<ReweighStep>('input');
+  const [rwSubmitting, setRwSubmitting]   = useState(false);
+  const [rwNewTotal, setRwNewTotal]       = useState<number | null>(null);
+  const [rwLoading, setRwLoading]         = useState(false);
+
+  // ── scanner refs
+  const html5QrcodeClassRef = useRef<any>(null);
+  const html5QrcodeRef      = useRef<any>(null);
+  const scansRef            = useRef<ScanEntry[]>([]);
+  const lastScannedRef      = useRef<{ pk: string; at: number } | null>(null);
+  const onScanRef           = useRef<(text: string) => void>(() => {});
+
+  useEffect(() => { scansRef.current = ciScans; }, [ciScans]);
+
+  // ── toast helper
+  function showToast(msg: string, type: Toast['type'] = 'info') {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  }
+
+  // ── mount: load session, prefetch cache
   useEffect(() => {
     const ev = sessionStorage.getItem('wn_event');
-    const st = sessionStorage.getItem('wn_station');
-    if (!ev || !st) { router.replace('/'); return; }
-    setEvent(JSON.parse(ev));
-    setStation(st);
-    setQueueLen(loadQueue().length);
-
-    // Prefetch offline cache
+    if (!ev) { router.replace('/'); return; }
     const parsed = JSON.parse(ev) as EventInfo;
+    setEvent(parsed);
+    setQueueLen(loadQueue().length);
     fetch(`/api/guests?event_id=${parsed.luma_event_id}`)
       .then(r => r.json())
       .then(d => setOfflineCache(d.cache ?? {}))
       .catch(() => {});
   }, [router]);
 
-  // Online/offline detection
+  // ── online/offline
   useEffect(() => {
     const onOnline  = () => { setOnline(true);  flushQueue(); };
     const onOffline = () => setOnline(false);
-    window.addEventListener('online', onOnline);
+    window.addEventListener('online',  onOnline);
     window.addEventListener('offline', onOffline);
     setOnline(navigator.onLine);
     return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
-  }, []);
+  }, []); // eslint-disable-line
 
+  // ── flush offline queue
   async function flushQueue() {
-    const q = loadQueue();
-    if (q.length === 0) return;
-
+    const ev = JSON.parse(sessionStorage.getItem('wn_event') ?? 'null') as EventInfo | null;
+    const q  = loadQueue();
+    if (!q.length) return;
     const remaining: QueueItem[] = [];
+
     for (const item of q) {
       try {
-        const res = await fetch('/api/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item),
-        });
-        if (!res.ok) throw new Error(await res.text());
-      } catch {
-        remaining.push({ ...item, retries: (item.retries ?? 0) + 1 });
-      }
+        if (item.type === 'checkin') {
+          const res = await fetch('/api/groups', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item),
+          });
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          if (ev && data.group_no !== item.local_group_no) {
+            const cache = loadGroupCache(ev.id);
+            const info  = cache[item.local_group_no];
+            if (info) {
+              delete cache[item.local_group_no];
+              cache[data.group_no] = { ...info, group_no: data.group_no, group_id: data.group_id };
+              saveGroupCache(ev.id, cache);
+            }
+          }
+        } else {
+          const res = await fetch('/api/weigh', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item),
+          });
+          if (!res.ok) throw new Error(await res.text());
+        }
+      } catch { remaining.push(item); }
     }
+
     saveQueue(remaining);
     setQueueLen(remaining.length);
   }
 
-  // QR scanner — html5-qrcode works on iOS Safari + Android + desktop
-  const html5QrcodeClassRef = useRef<any>(null);
-  const html5QrcodeRef    = useRef<any>(null);
-  const scansRef          = useRef<ScanEntry[]>([]);
-  const lastScannedRef    = useRef<{ pk: string; at: number } | null>(null);
-  const onScanRef         = useRef<(text: string) => void>(() => {});
-
-  useEffect(() => { scansRef.current = scans; }, [scans]);
-
-  // Pre-load the library on mount so startScanner() calls getUserMedia()
-  // without an async module-load in the middle — iOS Safari requires
-  // getUserMedia() to be reachable from the original user-gesture microtask.
+  // ── pre-load html5-qrcode (keeps getUserMedia in gesture context on iOS)
   useEffect(() => {
     import('html5-qrcode').then(m => { html5QrcodeClassRef.current = m.Html5Qrcode; });
   }, []);
 
+  // ── scanner start/stop
   async function startScanner() {
     const QrClass = html5QrcodeClassRef.current;
-    if (!QrClass) { alert('掃描器載入中，請稍後再試'); return; }
-
+    if (!QrClass) { showToast('掃描器載入中，請稍後再試', 'err'); return; }
     const instance = new QrClass('qr-reader');
     html5QrcodeRef.current = instance;
-    setScanning(true);
-
+    setCiScanning(true);
     try {
       await instance.start(
         { facingMode: 'environment' },
@@ -152,35 +203,35 @@ export default function ScanPage() {
         () => {},
       );
     } catch (e) {
-      setScanning(false);
+      setCiScanning(false);
       try { instance.clear(); } catch {}
       html5QrcodeRef.current = null;
-      alert('無法開啟相機：' + e);
+      showToast('無法開啟相機：' + e, 'err');
     }
   }
 
   async function stopScanner() {
-    const instance = html5QrcodeRef.current;
-    if (instance) {
-      try { await instance.stop(); } catch {}
-      try { instance.clear(); } catch {}
+    const inst = html5QrcodeRef.current;
+    if (inst) {
+      try { await inst.stop(); } catch {}
+      try { inst.clear(); }   catch {}
       html5QrcodeRef.current = null;
     }
-    setScanning(false);
+    setCiScanning(false);
   }
 
   // Re-assigned every render so callback always reads current state
   onScanRef.current = function handleQrRaw(raw: string) {
-    const pkMatch = raw.match(/[?&]pk=([^&]+)/);
-    if (!pkMatch) return;
-    const pk = pkMatch[1];
+    const m = raw.match(/[?&]pk=([^&]+)/);
+    if (!m) return;
+    const pk = m[1];
 
     const now = Date.now();
     if (lastScannedRef.current?.pk === pk && now - lastScannedRef.current.at < 3000) return;
     lastScannedRef.current = { pk, at: now };
 
     if (scansRef.current.some(s => s.pk === pk)) {
-      alert('此 QR 已掃過');
+      showToast('此 QR 已掃過', 'info');
       return;
     }
 
@@ -189,272 +240,514 @@ export default function ScanPage() {
 
   async function resolvePk(pk: string) {
     if (!event) return;
-    setResolving(true);
+    setCiResolving(true);
 
-    let guest: { name: string; email: string; ticket_count: number } | null = null;
+    let guest: { name: string; email: string; ticket_count: number; already_group_no?: number } | null = null;
 
     if (online) {
       try {
-        const res = await fetch(`/api/resolve?pk=${pk}&event_id=${event.luma_event_id}`);
+        const res = await fetch(
+          `/api/resolve?pk=${pk}&event_id=${event.luma_event_id}&db_event_id=${event.id}`
+        );
+        if (res.status === 404) {
+          showToast('此票券不屬於本場活動', 'err');
+          setCiResolving(false);
+          return;
+        }
         if (res.ok) guest = await res.json();
       } catch {}
     }
 
-    // Fallback to offline cache
-    if (!guest) guest = offlineCache[pk] ?? null;
+    if (!guest) guest = offlineCache[pk] ? { ...offlineCache[pk] } : null;
 
     if (!guest) {
-      alert('找不到此 QR 對應的報名者');
-      setResolving(false);
+      showToast('連線異常，請改用下方搜尋備援', 'err');
+      setCiResolving(false);
       return;
     }
 
-    setScans(prev => [...prev, {
+    if (guest.already_group_no != null) {
+      showToast(`此票已在第 ${guest.already_group_no} 組`, 'info');
+      setCiResolving(false);
+      return;
+    }
+
+    if ('vibrate' in navigator) navigator.vibrate(100);
+    setCiScans(prev => [...prev, {
       pk,
       name:         guest!.name,
       email:        guest!.email,
       ticket_count: guest!.ticket_count,
       actual_count: guest!.ticket_count,
     }]);
-    setResolving(false);
+    setCiResolving(false);
   }
 
   function addFromSearch(pk: string, g: { name: string; email: string; ticket_count: number }) {
-    if (scans.some(s => s.pk === pk)) return;
-    setScans(prev => [...prev, { pk, ...g, actual_count: g.ticket_count }]);
-    setSearchQ('');
+    if (ciScans.some(s => s.pk === pk)) { showToast('已在名單中', 'info'); return; }
+    setCiScans(prev => [...prev, { pk, ...g, actual_count: g.ticket_count }]);
+    setCiSearchQ('');
   }
 
   function updateActual(pk: string, delta: number) {
-    setScans(prev => prev.map(s =>
+    setCiScans(prev => prev.map(s =>
       s.pk === pk ? { ...s, actual_count: Math.max(1, s.actual_count + delta) } : s
     ));
   }
 
-  function removeScan(pk: string) {
-    setScans(prev => prev.filter(s => s.pk !== pk));
-  }
-
-  async function handleSubmit() {
+  // ── submit check-in
+  async function handleCheckinSubmit() {
     if (!event) return;
-    if (!weight || parseFloat(weight) <= 0) { alert('請輸入重量'); return; }
-    if (scans.length === 0) { alert('請先掃描 QR'); return; }
+    if (!ciWeight || parseFloat(ciWeight) <= 0) { showToast('請輸入重量', 'err'); return; }
+    if (ciScans.length === 0) { showToast('請先掃描 QR', 'err'); return; }
 
-    const payload: QueueItem = {
-      client_uuid:     newUUID(),
-      event_db_id:     event.id,
-      luma_event_id:   event.luma_event_id,
-      station,
-      total_weight_kg: parseFloat(weight),
-      shadow:          SHADOW,
-      scans,
-      retries:         0,
-    };
+    const headcount   = ciScans.reduce((s, e) => s + e.actual_count, 0);
+    const weight_kg   = parseFloat(ciWeight);
+    const client_uuid = crypto.randomUUID();
+    setCiSubmitting(true);
 
     if (!online) {
-      const q = loadQueue();
-      q.push(payload);
-      saveQueue(q);
-      setQueueLen(q.length);
-      setSubmitMsg('已儲存至離線佇列，恢復連線後自動上傳');
-      resetGroup();
+      const local_group_no = nextLocalGroupNo(event.id);
+      const item: CheckinQueueItem = {
+        type: 'checkin', client_uuid,
+        event_db_id: event.id, luma_event_id: event.luma_event_id,
+        weight_kg, shadow: SHADOW, headcount, scans: ciScans, local_group_no,
+      };
+      const q = loadQueue(); q.push(item); saveQueue(q);
+      const cache = loadGroupCache(event.id);
+      cache[local_group_no] = { group_id: client_uuid, group_no: local_group_no, headcount, total_weight: weight_kg };
+      saveGroupCache(event.id, cache);
+      setQueueLen(loadQueue().length);
+      setCiResult({ group_no: local_group_no, headcount, weight_kg, session_id: client_uuid });
+      setCiSubmitting(false);
+      stopScanner();
       return;
     }
 
-    setSubmitMsg('上傳中…');
     try {
-      const res = await fetch('/api/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const res = await fetch('/api/groups', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_uuid, event_db_id: event.id, luma_event_id: event.luma_event_id, weight_kg, shadow: SHADOW, headcount, scans: ciScans }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const total = scans.reduce((s, e) => s + e.actual_count, 0);
-      const perPerson = (parseFloat(weight) / total).toFixed(1);
-      setSubmitMsg(`✅ 完成！${total} 人，每人 ${perPerson} kg`);
-      resetGroup();
+      const data = await res.json();
+      const cache = loadGroupCache(event.id);
+      cache[data.group_no] = { group_id: data.group_id, group_no: data.group_no, headcount, total_weight: weight_kg };
+      saveGroupCache(event.id, cache);
+      setCiResult({ group_no: data.group_no, headcount, weight_kg, session_id: data.session_id });
+      stopScanner();
     } catch (e: any) {
-      // Save to queue on failure
-      const q = loadQueue();
-      q.push(payload);
-      saveQueue(q);
-      setQueueLen(q.length);
-      setSubmitMsg('上傳失敗，已加入離線佇列');
+      showToast('上傳失敗：' + e.message, 'err');
     }
+    setCiSubmitting(false);
   }
 
-  function resetGroup() {
-    setWeight('');
-    setScans([]);
-    stopScanner();
-    setTimeout(() => setSubmitMsg(''), 4000);
+  function resetCheckin() {
+    setCiScans([]); setCiWeight(''); setCiResult(null); setCiSearchQ('');
   }
+
+  // ── re-weigh lookup
+  async function handleRwLookup() {
+    if (!event || !rwGroupNo) return;
+    const no = parseInt(rwGroupNo);
+    if (isNaN(no) || no < 1) { showToast('請輸入有效組號', 'err'); return; }
+    setRwLoading(true);
+
+    if (online) {
+      try {
+        const res = await fetch(`/api/groups?event_id=${event.id}&group_no=${no}`);
+        if (res.status === 404) { showToast('查無此組號', 'err'); setRwLoading(false); return; }
+        if (res.ok) {
+          setRwGroupInfo(await res.json());
+          setRwStep('confirm');
+          setRwLoading(false);
+          return;
+        }
+      } catch {}
+    }
+
+    const cache = loadGroupCache(event.id);
+    if (cache[no]) { setRwGroupInfo(cache[no]); setRwStep('confirm'); }
+    else showToast('離線模式：找不到此組號', 'err');
+    setRwLoading(false);
+  }
+
+  // ── submit re-weigh
+  async function handleRwSubmit() {
+    if (!event || !rwGroupInfo) return;
+    if (!rwWeight || parseFloat(rwWeight) <= 0) { showToast('請輸入重量', 'err'); return; }
+
+    const weight_kg   = parseFloat(rwWeight);
+    const client_uuid = crypto.randomUUID();
+    setRwSubmitting(true);
+
+    if (!online) {
+      const q = loadQueue();
+      q.push({ type: 'reweigh', client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg });
+      saveQueue(q);
+      const cache = loadGroupCache(event.id);
+      const g = cache[rwGroupInfo.group_no];
+      if (g) { g.total_weight = +(g.total_weight + weight_kg).toFixed(2); saveGroupCache(event.id, cache); }
+      setQueueLen(loadQueue().length);
+      setRwNewTotal(+(rwGroupInfo.total_weight + weight_kg).toFixed(2));
+      setRwStep('done');
+      setRwSubmitting(false);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/weigh', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const cache = loadGroupCache(event.id);
+      const g = cache[rwGroupInfo.group_no];
+      if (g) { g.total_weight = data.new_total; saveGroupCache(event.id, cache); }
+      setRwNewTotal(data.new_total);
+      setRwStep('done');
+    } catch (e: any) {
+      showToast('上傳失敗：' + e.message, 'err');
+    }
+    setRwSubmitting(false);
+  }
+
+  function resetReweigh() {
+    setRwGroupNo(''); setRwGroupInfo(null); setRwWeight('');
+    setRwStep('input'); setRwNewTotal(null);
+  }
+
+  // ── search results (offline guest cache)
+  const ciSearchResults = ciSearchQ.length >= 2
+    ? Object.entries(offlineCache)
+        .filter(([, g]) =>
+          g.name.toLowerCase().includes(ciSearchQ.toLowerCase()) ||
+          g.email.toLowerCase().includes(ciSearchQ.toLowerCase())
+        )
+        .slice(0, 8)
+    : [];
+
+  const ciHeadcount   = ciScans.reduce((s, e) => s + e.actual_count, 0);
+  const ciKgPerPerson = ciHeadcount > 0 && ciWeight
+    ? (parseFloat(ciWeight) / ciHeadcount).toFixed(1) : '--';
 
   if (!event) return <div className="page text-center mt-2">載入中…</div>;
 
-  const totalHeadcount = scans.reduce((s, e) => s + e.actual_count, 0);
-  const kgPerPerson = totalHeadcount > 0 && weight
-    ? (parseFloat(weight) / totalHeadcount).toFixed(1)
-    : '--';
+  // ── render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="page">
+
+      {/* Shadow banner */}
       {SHADOW && (
-        <div style={{ background: '#FEF3C7', borderColor: '#F59E0B', border: '2px solid', borderRadius: 10, padding: '0.5rem 1rem', marginBottom: '0.75rem' }}>
-          <p style={{ color: '#92400E', fontWeight: 700, textAlign: 'center', fontSize: '0.9rem' }}>
-            ⚠ 影子測試模式
-          </p>
+        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 10, padding: '0.5rem 1rem', marginBottom: '0.75rem', textAlign: 'center' }}>
+          <strong style={{ color: '#92400E', fontSize: '0.85rem' }}>⚠ 影子測試模式 — 資料不計正式統計</strong>
         </div>
       )}
 
       {/* Status bar */}
       <div className="status-bar">
-        <span>{event.name} · {station} 站</span>
-        <span>
-          <span className={online ? 'text-green' : 'text-red'}>
-            {online ? '● 連線中' : '● 離線'}
-          </span>
-          {queueLen > 0 && <span style={{ marginLeft: 8, color: '#F59E0B' }}>待傳 {queueLen}</span>}
+        <span style={{ fontSize: '0.8rem' }}>{event.name} · {event.event_date}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={online ? 'text-green' : 'text-red'}>{online ? '● 連線中' : '● 離線'}</span>
+          {queueLen > 0 && <span style={{ color: '#F59E0B', fontSize: '0.8rem' }}>待傳 {queueLen}</span>}
         </span>
       </div>
 
-      {/* Weight input */}
-      <div className="card">
-        <label>總重量（公斤）</label>
-        <input
-          type="number"
-          inputMode="decimal"
-          step="0.1"
-          min="0"
-          value={weight}
-          onChange={e => setWeight(e.target.value)}
-          placeholder="0.0"
-          style={{ fontSize: '2rem', fontWeight: 800 }}
-        />
-        {totalHeadcount > 0 && weight && (
-          <p className="text-muted mt-1 text-center">
-            {totalHeadcount} 人 → 每人 <strong>{kgPerPerson} kg</strong>
-          </p>
-        )}
-      </div>
+      {/* QR reader div — always in DOM, height:0 when idle */}
+      <div
+        id="qr-reader"
+        style={{
+          width: '100%',
+          ...(ciScanning ? {
+            marginBottom: '0.75rem',
+            borderRadius: 10,
+            border: '3px solid var(--teal)',
+            overflow: 'hidden',
+          } : {
+            height: 0,
+            overflow: 'hidden',
+          }),
+        }}
+      />
 
-      {/* Scan section */}
-      <div className="card">
-        <div className="row mb-1">
-          <h2 className="grow">掃描 QR</h2>
-          {scans.length > 0 && (
-            <span className="badge" style={{ background: '#E0F2FE', color: '#0369A1' }}>
-              已掃 {scans.length} 人
-            </span>
-          )}
-        </div>
-
-        {/* Always in DOM with full width — height:0 when idle so html5-qrcode
-            reads a correct clientWidth but the camera is hidden until active */}
-        <div
-          id="qr-reader"
-          style={{
-            width: '100%',
-            ...(scanning ? {
-              marginBottom: '0.75rem',
-              borderRadius: 10,
-              border: '3px solid var(--teal)',
-              overflow: 'hidden',
-            } : {
-              height: 0,
-              overflow: 'hidden',
-            }),
-          }}
-        />
-
-        <div className="row gap-1 mb-1">
-          {!scanning ? (
-            <button className="btn btn-primary grow" onClick={startScanner} disabled={resolving}>
-              📷 掃描
-            </button>
-          ) : (
-            <button className="btn btn-ghost grow" onClick={stopScanner}>停止掃描</button>
-          )}
-        </div>
-
-        {resolving && <p className="text-muted text-center mb-1">查詢中…</p>}
-
-        {/* Scanned list */}
-        {scans.map(s => (
-          <div key={s.pk} style={{ border: '1.5px solid var(--border)', borderRadius: 10, padding: '0.75rem', marginBottom: '0.5rem' }}>
-            <div className="row">
-              <div className="grow">
-                <strong>{s.name}</strong>
-                <span className="text-muted" style={{ fontSize: '0.8rem', marginLeft: 6 }}>{s.email}</span>
-              </div>
-              <button
-                onClick={() => removeScan(s.pk)}
-                style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: '1.2rem' }}
-              >✕</button>
-            </div>
-            {s.ticket_count > 1 && (
-              <div className="row mt-1" style={{ justifyContent: 'space-between' }}>
-                <span className="text-muted" style={{ fontSize: '0.82rem' }}>名下 {s.ticket_count} 張票 · 實到人數</span>
-                <div className="row gap-1">
-                  <button
-                    className="btn btn-ghost"
-                    style={{ width: 40, minHeight: 36, padding: 0 }}
-                    onClick={() => updateActual(s.pk, -1)}
-                  >−</button>
-                  <span style={{ width: 24, textAlign: 'center', fontWeight: 700 }}>{s.actual_count}</span>
-                  <button
-                    className="btn btn-ghost"
-                    style={{ width: 40, minHeight: 36, padding: 0 }}
-                    onClick={() => updateActual(s.pk, 1)}
-                  >＋</button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-
-        {/* Search fallback */}
-        <hr className="divider" />
-        <label style={{ marginBottom: '0.35rem' }}>🔍 姓名 / Email 搜尋（備援）</label>
-        <input
-          type="search"
-          value={searchQ}
-          onChange={e => setSearchQ(e.target.value)}
-          placeholder="輸入姓名或 Email"
-          style={{ minHeight: 44, fontSize: '0.95rem' }}
-        />
-        {searchResults.map(([pk, g]) => (
-          <div
-            key={pk}
-            onClick={() => addFromSearch(pk, g)}
-            style={{
-              padding: '0.65rem 0.85rem',
-              borderBottom: '1px solid var(--border)',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-            }}
-          >
-            <strong>{g.name}</strong>
-            <span className="text-muted" style={{ marginLeft: 8 }}>{g.email}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Submit */}
-      {submitMsg && (
-        <div className="card" style={{ background: submitMsg.startsWith('✅') ? '#DCFCE7' : '#FEF3C7' }}>
-          <p style={{ textAlign: 'center', fontWeight: 600 }}>{submitMsg}</p>
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: '5rem', left: '50%', transform: 'translateX(-50%)',
+          padding: '0.75rem 1.5rem', borderRadius: 12, zIndex: 50,
+          background: toast.type === 'ok' ? '#DCFCE7' : toast.type === 'err' ? '#FEE2E2' : '#E0F2FE',
+          color:      toast.type === 'ok' ? '#166534' : toast.type === 'err' ? '#991B1B' : '#1e3a5f',
+          fontWeight: 600, fontSize: '0.9rem', whiteSpace: 'nowrap',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.2)', pointerEvents: 'none',
+        }}>
+          {toast.msg}
         </div>
       )}
 
-      <button
-        className="btn btn-navy"
-        style={{ marginBottom: '2rem' }}
-        onClick={handleSubmit}
-        disabled={scans.length === 0 || !weight}
-      >
-        送出這組
-      </button>
+      {/* ── Check-in success overlay ─────────────────────────────────────── */}
+      {ciResult && (
+        <div style={{
+          position: 'fixed', inset: 0, background: '#0A1628',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          zIndex: 100, padding: '2rem',
+        }}>
+          <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '1rem', marginBottom: '0.25rem' }}>組號</div>
+          <div style={{ fontSize: '7rem', fontWeight: 900, color: '#24B5CB', lineHeight: 1 }}>
+            {ciResult.group_no}
+          </div>
+          <div style={{ color: '#fff', fontSize: '1.1rem', marginTop: '1rem', textAlign: 'center' }}>
+            👥 {ciResult.headcount} 人 &nbsp;·&nbsp; 首磅 {ciResult.weight_kg} kg
+          </div>
+          {!online && (
+            <div style={{ color: '#F59E0B', fontSize: '0.8rem', marginTop: '0.35rem' }}>
+              ⚠ 離線暫定號碼，連線後自動確認
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '1rem', marginTop: '2.5rem', width: '100%' }}>
+            <button className="btn btn-ghost" style={{ flex: 1, color: '#fff', borderColor: 'rgba(255,255,255,0.4)' }}
+              onClick={() => { setCiResult(null); resetCheckin(); setMode('home'); }}>
+              完成
+            </button>
+            <button className="btn btn-primary" style={{ flex: 1 }}
+              onClick={() => { setCiResult(null); resetCheckin(); }}>
+              再報一組
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── HOME ─────────────────────────────────────────────────────────── */}
+      {mode === 'home' && (
+        <div style={{ paddingTop: '0.5rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1.5rem' }}>
+            <button
+              className="btn btn-primary"
+              style={{ minHeight: 88, fontSize: '1.25rem', letterSpacing: '0.03em' }}
+              onClick={() => setMode('checkin')}
+            >
+              📷&nbsp; 新組報到
+            </button>
+            <button
+              className="btn btn-navy"
+              style={{ minHeight: 88, fontSize: '1.25rem', letterSpacing: '0.03em' }}
+              onClick={() => setMode('reweigh')}
+            >
+              🔢&nbsp; 回秤
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── CHECK-IN ─────────────────────────────────────────────────────── */}
+      {mode === 'checkin' && (
+        <>
+          <div className="row mb-1" style={{ alignItems: 'center' }}>
+            <button
+              onClick={() => { setMode('home'); resetCheckin(); stopScanner(); }}
+              style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: '0.9rem', padding: '0.5rem 0' }}
+            >
+              ← 返回
+            </button>
+            <h2 className="grow" style={{ textAlign: 'center' }}>新組報到</h2>
+            <div style={{ width: 40 }} />
+          </div>
+
+          {/* Weight */}
+          <div className="card">
+            <label>首磅重量（公斤）</label>
+            <input
+              type="number" inputMode="decimal" step="0.1" min="0"
+              value={ciWeight}
+              onChange={e => setCiWeight(e.target.value)}
+              placeholder="0.0"
+            />
+            {ciHeadcount > 0 && ciWeight && (
+              <p className="text-muted mt-1 text-center">
+                {ciHeadcount} 人 → 每人 <strong>{ciKgPerPerson} kg</strong>
+              </p>
+            )}
+          </div>
+
+          {/* Scanner */}
+          <div className="card">
+            <div className="row mb-1">
+              <h2 className="grow">掃描成員 QR</h2>
+              {ciScans.length > 0 && (
+                <span className="badge" style={{ background: '#E0F2FE', color: '#0369A1' }}>
+                  {ciScans.length} 人
+                </span>
+              )}
+            </div>
+
+            <div className="row gap-1 mb-1">
+              {!ciScanning ? (
+                <button className="btn btn-primary grow" onClick={startScanner} disabled={ciResolving}>
+                  📷 掃描
+                </button>
+              ) : (
+                <button className="btn btn-ghost grow" onClick={stopScanner}>停止掃描</button>
+              )}
+            </div>
+
+            {ciResolving && <p className="text-muted text-center mb-1">查詢中…</p>}
+
+            {ciScans.map(s => (
+              <div key={s.pk} style={{ border: '1.5px solid var(--border)', borderRadius: 10, padding: '0.75rem', marginBottom: '0.5rem' }}>
+                <div className="row">
+                  <div className="grow">
+                    <strong>{s.name}</strong>
+                    <span className="text-muted" style={{ fontSize: '0.8rem', marginLeft: 6 }}>{s.email}</span>
+                  </div>
+                  <button
+                    onClick={() => setCiScans(p => p.filter(x => x.pk !== s.pk))}
+                    style={{ background: 'none', border: 'none', color: 'var(--red)', cursor: 'pointer', fontSize: '1.2rem' }}
+                  >✕</button>
+                </div>
+                {s.ticket_count > 1 && (
+                  <div className="row mt-1" style={{ justifyContent: 'space-between' }}>
+                    <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                      名下 {s.ticket_count} 張票 · 實到人數
+                    </span>
+                    <div className="row gap-1">
+                      <button className="btn btn-ghost" style={{ width: 40, minHeight: 36, padding: 0 }}
+                        onClick={() => updateActual(s.pk, -1)}>−</button>
+                      <span style={{ width: 28, textAlign: 'center', fontWeight: 700 }}>{s.actual_count}</span>
+                      <button className="btn btn-ghost" style={{ width: 40, minHeight: 36, padding: 0 }}
+                        onClick={() => updateActual(s.pk, 1)}>＋</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <hr className="divider" />
+            <label>🔍 姓名 / Email 搜尋（備援）</label>
+            <input
+              type="search"
+              value={ciSearchQ}
+              onChange={e => setCiSearchQ(e.target.value)}
+              placeholder="輸入姓名或 Email"
+              style={{ minHeight: 44, fontSize: '0.95rem' }}
+            />
+            {ciSearchResults.map(([pk, g]) => (
+              <div key={pk} onClick={() => addFromSearch(pk, g)}
+                style={{ padding: '0.65rem 0.85rem', borderBottom: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.9rem' }}>
+                <strong>{g.name}</strong>
+                <span className="text-muted" style={{ marginLeft: 8 }}>{g.email}</span>
+              </div>
+            ))}
+          </div>
+
+          <button
+            className="btn btn-navy"
+            style={{ marginBottom: '2rem' }}
+            onClick={handleCheckinSubmit}
+            disabled={ciScans.length === 0 || !ciWeight || ciSubmitting}
+          >
+            {ciSubmitting ? '上傳中…' : '送出 → 取得組號'}
+          </button>
+        </>
+      )}
+
+      {/* ── RE-WEIGH ─────────────────────────────────────────────────────── */}
+      {mode === 'reweigh' && (
+        <>
+          <div className="row mb-1" style={{ alignItems: 'center' }}>
+            <button
+              onClick={() => { setMode('home'); resetReweigh(); }}
+              style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: '0.9rem', padding: '0.5rem 0' }}
+            >
+              ← 返回
+            </button>
+            <h2 className="grow" style={{ textAlign: 'center' }}>回秤</h2>
+            <div style={{ width: 40 }} />
+          </div>
+
+          {rwStep === 'input' && (
+            <div className="card">
+              <label>組號</label>
+              <input
+                type="number" inputMode="numeric"
+                value={rwGroupNo}
+                onChange={e => setRwGroupNo(e.target.value)}
+                placeholder="輸入組號"
+                style={{ fontSize: '2.5rem', fontWeight: 800 }}
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                onKeyDown={e => e.key === 'Enter' && handleRwLookup()}
+              />
+              <button
+                className="btn btn-primary"
+                style={{ marginTop: '1rem' }}
+                onClick={handleRwLookup}
+                disabled={!rwGroupNo || rwLoading}
+              >
+                {rwLoading ? '查詢中…' : '確認組號'}
+              </button>
+            </div>
+          )}
+
+          {rwStep === 'confirm' && rwGroupInfo && (
+            <>
+              <div className="card" style={{ background: '#EFF6FF', textAlign: 'center' }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>第</div>
+                <div style={{ fontSize: '4rem', fontWeight: 900, color: 'var(--navy)', lineHeight: 1 }}>
+                  {rwGroupInfo.group_no}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>組</div>
+                <div style={{ marginTop: '0.75rem', fontWeight: 600 }}>
+                  👥 {rwGroupInfo.headcount} 人 &nbsp;·&nbsp; 已累計 <strong>{rwGroupInfo.total_weight.toFixed(1)} kg</strong>
+                </div>
+              </div>
+
+              <div className="card">
+                <label>本次重量（公斤）</label>
+                <input
+                  type="number" inputMode="decimal" step="0.1" min="0"
+                  value={rwWeight}
+                  onChange={e => setRwWeight(e.target.value)}
+                  placeholder="0.0"
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                />
+              </div>
+
+              <div className="row gap-1 mb-2">
+                <button className="btn btn-ghost grow"
+                  onClick={() => { setRwStep('input'); setRwWeight(''); }}>
+                  ← 改組號
+                </button>
+                <button className="btn btn-navy grow"
+                  onClick={handleRwSubmit}
+                  disabled={!rwWeight || rwSubmitting}>
+                  {rwSubmitting ? '上傳中…' : '確認回秤'}
+                </button>
+              </div>
+            </>
+          )}
+
+          {rwStep === 'done' && rwGroupInfo && rwNewTotal !== null && (
+            <div className="card" style={{ textAlign: 'center', padding: '2rem 1.25rem' }}>
+              <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>✅</div>
+              <div style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>第 {rwGroupInfo.group_no} 組 · 累計</div>
+              <div style={{ fontSize: '3rem', fontWeight: 900, color: 'var(--navy)', margin: '0.25rem 0' }}>
+                {rwNewTotal.toFixed(1)} <span style={{ fontSize: '1.2rem', fontWeight: 400 }}>kg</span>
+              </div>
+              <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
+                {rwGroupInfo.headcount} 人 → 每人 {(rwNewTotal / rwGroupInfo.headcount).toFixed(1)} kg
+              </div>
+              <button className="btn btn-primary" style={{ marginBottom: '0.75rem' }} onClick={resetReweigh}>
+                再回秤
+              </button>
+              <button className="btn btn-ghost" onClick={() => { resetReweigh(); setMode('home'); }}>
+                返回主頁
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
