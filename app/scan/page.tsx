@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 const SHADOW = process.env.NEXT_PUBLIC_SHADOW_MODE === 'true';
@@ -120,62 +120,72 @@ export default function ScanPage() {
     setQueueLen(remaining.length);
   }
 
-  // QR scanner using BarcodeDetector or html5-qrcode fallback
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const detectorRef = useRef<any>(null);
-  const scanLoopRef = useRef<number>(0);
+  // QR scanner — html5-qrcode works on iOS Safari + Android + desktop
+  const html5QrcodeRef = useRef<any>(null);
+  const scansRef = useRef<ScanEntry[]>([]);
+  const lastScannedRef = useRef<{ pk: string; at: number } | null>(null);
+  const onScanRef = useRef<(text: string) => void>(() => {});
 
-  async function startScanner() {
-    setScanning(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-      });
-      streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
+  useEffect(() => { scansRef.current = scans; }, [scans]);
 
-      if ('BarcodeDetector' in window) {
-        detectorRef.current = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-        scanLoop();
+  useEffect(() => {
+    if (!scanning) return;
+
+    let instance: any;
+    let mounted = true;
+
+    (async () => {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      if (!mounted) return;
+      instance = new Html5Qrcode('qr-reader');
+      html5QrcodeRef.current = instance;
+      try {
+        await instance.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (text: string) => onScanRef.current(text),
+          () => {},
+        );
+      } catch (e) {
+        if (mounted) {
+          setScanning(false);
+          alert('無法開啟相機：' + e);
+        }
       }
-    } catch (e) {
-      setScanning(false);
-      alert('無法開啟相機：' + e);
-    }
-  }
+    })();
 
-  function stopScanner() {
-    cancelAnimationFrame(scanLoopRef.current);
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    streamRef.current = null;
-    setScanning(false);
-  }
-
-  const scanLoop = useCallback(() => {
-    if (!videoRef.current || !detectorRef.current) return;
-    detectorRef.current.detect(videoRef.current).then((codes: any[]) => {
-      if (codes.length > 0) {
-        const raw = codes[0].rawValue as string;
-        handleQrRaw(raw);
+    return () => {
+      mounted = false;
+      if (instance) {
+        instance.stop().catch(() => {}).finally(() => {
+          try { instance.clear(); } catch {}
+        });
+        html5QrcodeRef.current = null;
       }
-    }).catch(() => {});
-    scanLoopRef.current = requestAnimationFrame(scanLoop);
-  }, []); // eslint-disable-line
+    };
+  }, [scanning]); // eslint-disable-line
 
-  async function handleQrRaw(raw: string) {
-    // Accept both luma.com/check-in/... and lu.ma/...
+  function startScanner() { setScanning(true); }
+  function stopScanner()  { setScanning(false); }
+
+  // Re-assigned every render so the callback always reads current state/refs
+  onScanRef.current = function handleQrRaw(raw: string) {
     const pkMatch = raw.match(/[?&]pk=([^&]+)/);
-    if (!pkMatch) { alert('無法辨識 QR 碼'); return; }
+    if (!pkMatch) return;
     const pk = pkMatch[1];
 
-    if (scans.some(s => s.pk === pk)) {
+    // Debounce: ignore the same QR seen within 3s to avoid repeat alerts
+    const now = Date.now();
+    if (lastScannedRef.current?.pk === pk && now - lastScannedRef.current.at < 3000) return;
+    lastScannedRef.current = { pk, at: now };
+
+    if (scansRef.current.some(s => s.pk === pk)) {
       alert('此 QR 已掃過');
       return;
     }
 
-    await resolvePk(pk);
-  }
+    resolvePk(pk);
+  };
 
   async function resolvePk(pk: string) {
     if (!event) return;
@@ -339,22 +349,17 @@ export default function ScanPage() {
           )}
         </div>
 
-        {/* Camera viewfinder */}
-        {scanning && (
-          <div style={{ position: 'relative', marginBottom: '0.75rem' }}>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{ width: '100%', borderRadius: 10, background: '#000' }}
-            />
-            <div style={{
-              position: 'absolute', inset: 0, border: '3px solid var(--teal)',
-              borderRadius: 10, pointerEvents: 'none',
-            }} />
-          </div>
-        )}
+        {/* Camera viewfinder — always in DOM so html5-qrcode can mount into it */}
+        <div
+          id="qr-reader"
+          style={{
+            display: scanning ? 'block' : 'none',
+            marginBottom: '0.75rem',
+            borderRadius: 10,
+            overflow: 'hidden',
+            border: scanning ? '3px solid var(--teal)' : 'none',
+          }}
+        />
 
         <div className="row gap-1 mb-1">
           {!scanning ? (
