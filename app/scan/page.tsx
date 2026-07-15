@@ -121,60 +121,60 @@ export default function ScanPage() {
   }
 
   // QR scanner — html5-qrcode works on iOS Safari + Android + desktop
-  const html5QrcodeRef = useRef<any>(null);
-  const scansRef = useRef<ScanEntry[]>([]);
-  const lastScannedRef = useRef<{ pk: string; at: number } | null>(null);
-  const onScanRef = useRef<(text: string) => void>(() => {});
+  const html5QrcodeClassRef = useRef<any>(null);
+  const html5QrcodeRef    = useRef<any>(null);
+  const scansRef          = useRef<ScanEntry[]>([]);
+  const lastScannedRef    = useRef<{ pk: string; at: number } | null>(null);
+  const onScanRef         = useRef<(text: string) => void>(() => {});
 
   useEffect(() => { scansRef.current = scans; }, [scans]);
 
+  // Pre-load the library on mount so startScanner() calls getUserMedia()
+  // without an async module-load in the middle — iOS Safari requires
+  // getUserMedia() to be reachable from the original user-gesture microtask.
   useEffect(() => {
-    if (!scanning) return;
+    import('html5-qrcode').then(m => { html5QrcodeClassRef.current = m.Html5Qrcode; });
+  }, []);
 
-    let instance: any;
-    let mounted = true;
+  async function startScanner() {
+    const QrClass = html5QrcodeClassRef.current;
+    if (!QrClass) { alert('掃描器載入中，請稍後再試'); return; }
 
-    (async () => {
-      const { Html5Qrcode } = await import('html5-qrcode');
-      if (!mounted) return;
-      instance = new Html5Qrcode('qr-reader');
-      html5QrcodeRef.current = instance;
-      try {
-        await instance.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
-          (text: string) => onScanRef.current(text),
-          () => {},
-        );
-      } catch (e) {
-        if (mounted) {
-          setScanning(false);
-          alert('無法開啟相機：' + e);
-        }
-      }
-    })();
+    const instance = new QrClass('qr-reader');
+    html5QrcodeRef.current = instance;
+    setScanning(true);
 
-    return () => {
-      mounted = false;
-      if (instance) {
-        instance.stop().catch(() => {}).finally(() => {
-          try { instance.clear(); } catch {}
-        });
-        html5QrcodeRef.current = null;
-      }
-    };
-  }, [scanning]); // eslint-disable-line
+    try {
+      await instance.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (text: string) => onScanRef.current(text),
+        () => {},
+      );
+    } catch (e) {
+      setScanning(false);
+      try { instance.clear(); } catch {}
+      html5QrcodeRef.current = null;
+      alert('無法開啟相機：' + e);
+    }
+  }
 
-  function startScanner() { setScanning(true); }
-  function stopScanner()  { setScanning(false); }
+  async function stopScanner() {
+    const instance = html5QrcodeRef.current;
+    if (instance) {
+      try { await instance.stop(); } catch {}
+      try { instance.clear(); } catch {}
+      html5QrcodeRef.current = null;
+    }
+    setScanning(false);
+  }
 
-  // Re-assigned every render so the callback always reads current state/refs
+  // Re-assigned every render so callback always reads current state
   onScanRef.current = function handleQrRaw(raw: string) {
     const pkMatch = raw.match(/[?&]pk=([^&]+)/);
     if (!pkMatch) return;
     const pk = pkMatch[1];
 
-    // Debounce: ignore the same QR seen within 3s to avoid repeat alerts
     const now = Date.now();
     if (lastScannedRef.current?.pk === pk && now - lastScannedRef.current.at < 3000) return;
     lastScannedRef.current = { pk, at: now };
@@ -349,15 +349,21 @@ export default function ScanPage() {
           )}
         </div>
 
-        {/* Camera viewfinder — always in DOM so html5-qrcode can mount into it */}
+        {/* Always in DOM with full width — height:0 when idle so html5-qrcode
+            reads a correct clientWidth but the camera is hidden until active */}
         <div
           id="qr-reader"
           style={{
-            display: scanning ? 'block' : 'none',
-            marginBottom: '0.75rem',
-            borderRadius: 10,
-            overflow: 'hidden',
-            border: scanning ? '3px solid var(--teal)' : 'none',
+            width: '100%',
+            ...(scanning ? {
+              marginBottom: '0.75rem',
+              borderRadius: 10,
+              border: '3px solid var(--teal)',
+              overflow: 'hidden',
+            } : {
+              height: 0,
+              overflow: 'hidden',
+            }),
           }}
         />
 
