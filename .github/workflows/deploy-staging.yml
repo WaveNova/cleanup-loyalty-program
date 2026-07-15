@@ -1,0 +1,12 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches: [staging]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel staging deployment
+        run: curl -s -X POST "${{ secrets.VERCEL_STAGING_HOOK }}"
