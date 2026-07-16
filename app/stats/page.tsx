@@ -76,7 +76,7 @@ export default function StatsPage() {
         <div className="card">
           <label>通行碼</label>
           <input
-            type="password" inputMode="numeric"
+            type="password" autoCapitalize="none" autoCorrect="off" spellCheck={false}
             value={passcode} onChange={e => setPasscode(e.target.value)}
             placeholder="當日通行碼"
             onKeyDown={e => e.key === 'Enter' && handleAuth()}

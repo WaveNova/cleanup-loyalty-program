@@ -86,7 +86,9 @@ export default function SetupPage() {
           <label>通行碼</label>
           <input
             type="password"
-            inputMode="numeric"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={passcode}
             onChange={e => setPasscode(e.target.value)}
             placeholder="輸入當日通行碼"

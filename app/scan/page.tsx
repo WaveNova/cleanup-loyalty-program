@@ -96,6 +96,8 @@ export default function ScanPage() {
   const [ciResult, setCiResult]         = useState<GroupResult | null>(null);
   const [ciSearchQ, setCiSearchQ]       = useState('');
   const [ciScanning, setCiScanning]     = useState(false);
+  const [frameDisplay, setFrameDisplay] = useState(0);
+  const [frameWarning, setFrameWarning] = useState(false);
 
   // ── re-weigh
   const [rwGroupNo, setRwGroupNo]         = useState('');
@@ -109,6 +111,8 @@ export default function ScanPage() {
   // ── scanner refs
   const html5QrcodeClassRef = useRef<any>(null);
   const html5QrcodeRef      = useRef<any>(null);
+  const frameCountRef       = useRef<number>(0);
+  const photoInputRef       = useRef<HTMLInputElement>(null);
   const scansRef            = useRef<ScanEntry[]>([]);
   const lastScannedRef      = useRef<{ pk: string; at: number } | null>(null);
   const onScanRef           = useRef<(text: string) => void>(() => {});
@@ -183,41 +187,108 @@ export default function ScanPage() {
     setQueueLen(remaining.length);
   }
 
-  // ── pre-load html5-qrcode (keeps getUserMedia in gesture context on iOS)
+  // ── pre-load html5-qrcode on mount
   useEffect(() => {
     import('html5-qrcode').then(m => { html5QrcodeClassRef.current = m.Html5Qrcode; });
   }, []);
 
-  // ── scanner start/stop
-  async function startScanner() {
-    const QrClass = html5QrcodeClassRef.current;
-    if (!QrClass) { showToast('掃描器載入中，請稍後再試', 'err'); return; }
-    const instance = new QrClass('qr-reader');
-    html5QrcodeRef.current = instance;
-    setCiScanning(true);
-    try {
-      await instance.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (text: string) => onScanRef.current(text),
-        () => {},
-      );
-    } catch (e) {
-      setCiScanning(false);
-      try { instance.clear(); } catch {}
-      html5QrcodeRef.current = null;
-      showToast('無法開啟相機：' + e, 'err');
-    }
-  }
+  // ── scanner lifecycle: driven by ciScanning state.
+  // The #qr-reader div is conditionally rendered — it only exists in the DOM when ciScanning===true.
+  // Two rAF frames ensure the div is fully mounted and laid out (height non-zero) before html5-qrcode
+  // reads its size to compute the qrbox sampling area. This prevents the silent zero-size failure on iOS.
+  useEffect(() => {
+    if (!ciScanning) return;
+    let cancelled = false;
+    frameCountRef.current = 0;
 
-  async function stopScanner() {
-    const inst = html5QrcodeRef.current;
-    if (inst) {
-      try { await inst.stop(); } catch {}
-      try { inst.clear(); }   catch {}
-      html5QrcodeRef.current = null;
+    (async () => {
+      const QrClass = html5QrcodeClassRef.current;
+      if (!QrClass) {
+        showToast('掃描器載入中，請稍後再試', 'err');
+        setCiScanning(false);
+        return;
+      }
+
+      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+      if (cancelled) return;
+
+      const instance = new QrClass('qr-reader');
+      html5QrcodeRef.current = instance;
+
+      try {
+        await instance.start(
+          { facingMode: 'environment' },
+          {
+            fps: 10,
+            qrbox: (w: number, h: number) => {
+              const s = Math.max(200, Math.floor(Math.min(w, h) * 0.8));
+              return { width: s, height: s };
+            },
+            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          },
+          (text: string) => onScanRef.current(text),
+          () => { frameCountRef.current += 1; },
+        );
+      } catch (e) {
+        if (!cancelled) {
+          setCiScanning(false);
+          showToast('無法開啟相機：' + e, 'err');
+        }
+        try { instance.clear(); } catch {}
+        html5QrcodeRef.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      const inst = html5QrcodeRef.current;
+      if (inst) {
+        inst.stop().catch(() => {}).finally(() => { try { inst.clear(); } catch {} });
+        html5QrcodeRef.current = null;
+      }
+    };
+  }, [ciScanning]); // eslint-disable-line
+
+  // ── heartbeat: update frame count display every second while scanning
+  useEffect(() => {
+    if (!ciScanning) { setFrameDisplay(0); setFrameWarning(false); return; }
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      const n = frameCountRef.current;
+      setFrameDisplay(n);
+      if (n === 0 && Date.now() - startedAt > 5000) setFrameWarning(true);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [ciScanning]);
+
+  function startScanner() { setCiScanning(true); }
+  function stopScanner()  { setCiScanning(false); }
+
+  // ── photo capture fallback
+  async function handlePhotoFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const QrClass = html5QrcodeClassRef.current;
+    if (!QrClass) { showToast('掃描器尚未載入', 'err'); return; }
+
+    const tempId  = '__qr_photo_temp__';
+    const tempDiv = document.createElement('div');
+    tempDiv.id = tempId;
+    Object.assign(tempDiv.style, { position: 'fixed', top: '-9999px', width: '300px', height: '300px' });
+    document.body.appendChild(tempDiv);
+
+    const instance = new QrClass(tempId);
+    try {
+      const text = await instance.scanFile(file, false);
+      onScanRef.current(text);
+    } catch {
+      showToast('無法辨識照片中的 QR，請重試', 'err');
+    } finally {
+      try { instance.clear(); } catch {}
+      document.body.removeChild(tempDiv);
     }
-    setCiScanning(false);
   }
 
   // Re-assigned every render so callback always reads current state
@@ -455,22 +526,20 @@ export default function ScanPage() {
         </span>
       </div>
 
-      {/* QR reader div — always in DOM, height:0 when idle */}
-      <div
-        id="qr-reader"
-        style={{
-          width: '100%',
-          ...(ciScanning ? {
+      {/* QR reader: conditionally rendered so it has real dimensions when html5-qrcode initialises */}
+      {ciScanning && (
+        <div
+          id="qr-reader"
+          style={{
+            width: '100%',
+            minHeight: 320,
             marginBottom: '0.75rem',
             borderRadius: 10,
             border: '3px solid var(--teal)',
             overflow: 'hidden',
-          } : {
-            height: 0,
-            overflow: 'hidden',
-          }),
-        }}
-      />
+          }}
+        />
+      )}
 
       {/* Toast */}
       {toast && (
@@ -589,7 +658,35 @@ export default function ScanPage() {
               ) : (
                 <button className="btn btn-ghost grow" onClick={stopScanner}>停止掃描</button>
               )}
+              <button
+                className="btn btn-ghost"
+                style={{ width: 'auto', minWidth: 80, fontSize: '0.85rem' }}
+                onClick={() => photoInputRef.current?.click()}
+                disabled={ciResolving}
+              >
+                📸 拍照
+              </button>
             </div>
+
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={handlePhotoFile}
+            />
+
+            {ciScanning && (
+              <p style={{
+                fontSize: '0.78rem', textAlign: 'center', marginBottom: '0.5rem',
+                color: frameWarning ? 'var(--red)' : 'var(--muted)',
+              }}>
+                {frameWarning
+                  ? '⚠ 掃描引擎未運作，請改用 📸 拍照或下方搜尋備援'
+                  : `偵測中 · 已取樣 ${frameDisplay} 次`}
+              </p>
+            )}
 
             {ciResolving && <p className="text-muted text-center mb-1">查詢中…</p>}
 
