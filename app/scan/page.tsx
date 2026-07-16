@@ -212,6 +212,7 @@ export default function ScanPage() {
         },
       );
       scannerRef.current = scanner;
+      scanner.setInversionMode('both'); // Luma tickets use inverted QR (white on black)
 
       try {
         await scanner.start();
