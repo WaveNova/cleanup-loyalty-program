@@ -9,12 +9,15 @@ export default function AuthCallbackPage() {
 
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get('code');
-    if (!code) { router.replace('/my'); return; }
-
-    supabaseBrowser.auth
-      .exchangeCodeForSession(code)
-      .then(() => router.replace('/my'))
-      .catch(() => router.replace('/my'));
+    if (code) {
+      supabaseBrowser.auth
+        .exchangeCodeForSession(code)
+        .finally(() => router.replace('/my'));
+    } else {
+      // Implicit flow fallback: touching the client triggers hash parsing,
+      // then wait for session before navigating so the token isn't lost.
+      supabaseBrowser.auth.getSession().then(() => router.replace('/my'));
+    }
   }, [router]);
 
   return (
