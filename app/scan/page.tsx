@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import QrScanner from 'qr-scanner';
 
 const SHADOW = process.env.NEXT_PUBLIC_SHADOW_MODE === 'true';
 
@@ -109,13 +110,13 @@ export default function ScanPage() {
   const [rwLoading, setRwLoading]         = useState(false);
 
   // ── scanner refs
-  const html5QrcodeClassRef = useRef<any>(null);
-  const html5QrcodeRef      = useRef<any>(null);
-  const frameCountRef       = useRef<number>(0);
-  const photoInputRef       = useRef<HTMLInputElement>(null);
-  const scansRef            = useRef<ScanEntry[]>([]);
-  const lastScannedRef      = useRef<{ pk: string; at: number } | null>(null);
-  const onScanRef           = useRef<(text: string) => void>(() => {});
+  const videoRef      = useRef<HTMLVideoElement>(null);
+  const scannerRef    = useRef<QrScanner | null>(null);
+  const frameCountRef = useRef<number>(0);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const scansRef      = useRef<ScanEntry[]>([]);
+  const lastScannedRef = useRef<{ pk: string; at: number } | null>(null);
+  const onScanRef      = useRef<(text: string) => void>(() => {});
 
   useEffect(() => { scansRef.current = ciScans; }, [ciScans]);
 
@@ -187,65 +188,47 @@ export default function ScanPage() {
     setQueueLen(remaining.length);
   }
 
-  // ── pre-load html5-qrcode on mount
-  useEffect(() => {
-    import('html5-qrcode').then(m => { html5QrcodeClassRef.current = m.Html5Qrcode; });
-  }, []);
-
-  // ── scanner lifecycle: driven by ciScanning state.
-  // The #qr-reader div is conditionally rendered — it only exists in the DOM when ciScanning===true.
-  // Two rAF frames ensure the div is fully mounted and laid out (height non-zero) before html5-qrcode
-  // reads its size to compute the qrbox sampling area. This prevents the silent zero-size failure on iOS.
+  // ── scanner lifecycle (qr-scanner / nimiq): starts when ciScanning→true.
+  // <video> is conditionally rendered so it has real layout before QrScanner attaches.
+  // Two rAF frames ensure the element is mounted and painted before scanner.start().
   useEffect(() => {
     if (!ciScanning) return;
     let cancelled = false;
     frameCountRef.current = 0;
 
     (async () => {
-      const QrClass = html5QrcodeClassRef.current;
-      if (!QrClass) {
-        showToast('掃描器載入中，請稍後再試', 'err');
-        setCiScanning(false);
-        return;
-      }
-
       await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-      if (cancelled) return;
+      if (cancelled || !videoRef.current) return;
 
-      const instance = new QrClass('qr-reader');
-      html5QrcodeRef.current = instance;
+      const scanner = new QrScanner(
+        videoRef.current,
+        result => onScanRef.current(result.data),
+        {
+          preferredCamera:         'environment',
+          maxScansPerSecond:       8,
+          returnDetailedScanResult: true,
+          highlightScanRegion:     true,
+          onDecodeError:           () => { frameCountRef.current += 1; },
+        },
+      );
+      scannerRef.current = scanner;
 
       try {
-        await instance.start(
-          { facingMode: 'environment' },
-          {
-            fps: 10,
-            qrbox: (w: number, h: number) => {
-              const s = Math.max(200, Math.floor(Math.min(w, h) * 0.8));
-              return { width: s, height: s };
-            },
-            experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-          },
-          (text: string) => onScanRef.current(text),
-          () => { frameCountRef.current += 1; },
-        );
+        await scanner.start();
       } catch (e) {
         if (!cancelled) {
           setCiScanning(false);
           showToast('無法開啟相機：' + e, 'err');
         }
-        try { instance.clear(); } catch {}
-        html5QrcodeRef.current = null;
+        scanner.destroy();
+        scannerRef.current = null;
       }
     })();
 
     return () => {
       cancelled = true;
-      const inst = html5QrcodeRef.current;
-      if (inst) {
-        inst.stop().catch(() => {}).finally(() => { try { inst.clear(); } catch {} });
-        html5QrcodeRef.current = null;
-      }
+      scannerRef.current?.destroy();
+      scannerRef.current = null;
     };
   }, [ciScanning]); // eslint-disable-line
 
@@ -264,30 +247,16 @@ export default function ScanPage() {
   function startScanner() { setCiScanning(true); }
   function stopScanner()  { setCiScanning(false); }
 
-  // ── photo capture fallback
+  // ── photo capture fallback (same qr-scanner engine, static method)
   async function handlePhotoFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-
-    const QrClass = html5QrcodeClassRef.current;
-    if (!QrClass) { showToast('掃描器尚未載入', 'err'); return; }
-
-    const tempId  = '__qr_photo_temp__';
-    const tempDiv = document.createElement('div');
-    tempDiv.id = tempId;
-    Object.assign(tempDiv.style, { position: 'fixed', top: '-9999px', width: '300px', height: '300px' });
-    document.body.appendChild(tempDiv);
-
-    const instance = new QrClass(tempId);
     try {
-      const text = await instance.scanFile(file, false);
-      onScanRef.current(text);
+      const result = await QrScanner.scanImage(file, { returnDetailedScanResult: true });
+      onScanRef.current(result.data);
     } catch {
-      showToast('無法辨識照片中的 QR，請重試', 'err');
-    } finally {
-      try { instance.clear(); } catch {}
-      document.body.removeChild(tempDiv);
+      showToast('照片中未偵測到 QR，請重拍（對焦、放大票券）', 'err');
     }
   }
 
@@ -526,19 +495,28 @@ export default function ScanPage() {
         </span>
       </div>
 
-      {/* QR reader: conditionally rendered so it has real dimensions when html5-qrcode initialises */}
+      {/* Video viewfinder: conditionally rendered so qr-scanner always gets a non-zero element */}
       {ciScanning && (
-        <div
-          id="qr-reader"
-          style={{
-            width: '100%',
-            minHeight: 320,
-            marginBottom: '0.75rem',
-            borderRadius: 10,
-            border: '3px solid var(--teal)',
-            overflow: 'hidden',
-          }}
-        />
+        <div style={{ position: 'relative', width: '100%', marginBottom: '0.75rem' }}>
+          <video
+            ref={videoRef}
+            style={{
+              width: '100%', minHeight: 320, borderRadius: 10,
+              objectFit: 'cover', border: '3px solid var(--teal)', background: '#000',
+            }}
+            muted
+            playsInline
+          />
+          <div style={{
+            position: 'absolute', bottom: 10, left: 0, right: 0, textAlign: 'center',
+            color: frameWarning ? '#FCA5A5' : 'rgba(255,255,255,0.85)',
+            fontSize: '0.75rem', textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+          }}>
+            {frameWarning
+              ? '⚠ 掃描引擎未運作，請改用 📸 拍照或搜尋備援'
+              : `偵測中 · 已取樣 ${frameDisplay} 次`}
+          </div>
+        </div>
       )}
 
       {/* Toast */}
@@ -676,17 +654,6 @@ export default function ScanPage() {
               style={{ display: 'none' }}
               onChange={handlePhotoFile}
             />
-
-            {ciScanning && (
-              <p style={{
-                fontSize: '0.78rem', textAlign: 'center', marginBottom: '0.5rem',
-                color: frameWarning ? 'var(--red)' : 'var(--muted)',
-              }}>
-                {frameWarning
-                  ? '⚠ 掃描引擎未運作，請改用 📸 拍照或下方搜尋備援'
-                  : `偵測中 · 已取樣 ${frameDisplay} 次`}
-              </p>
-            )}
 
             {ciResolving && <p className="text-muted text-center mb-1">查詢中…</p>}
 
