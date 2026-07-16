@@ -5,6 +5,30 @@ export const runtime = 'nodejs';
 
 const SHOW_SHADOW = process.env.MEMBER_SHOW_SHADOW === 'true';
 
+type WeightState = 'finalized' | 'realtime' | 'no_weight';
+
+function resolveWeight(row: {
+  final_weight_kg: number | null;
+  group_id: string | null;
+  groups: { is_shadow: boolean; headcount: number; weigh_sessions: { weight_kg: number; voided: boolean }[] } | null;
+}): { weight_kg: number; weight_state: WeightState } {
+  const final = Number(row.final_weight_kg);
+  if (final > 0) return { weight_kg: final, weight_state: 'finalized' };
+
+  if (row.group_id && row.groups) {
+    const g = row.groups;
+    const sessionTotal = (g.weigh_sessions ?? [])
+      .filter(s => !s.voided)
+      .reduce((s, w) => s + Number(w.weight_kg), 0);
+    const weight_kg = g.headcount > 0
+      ? Math.round(sessionTotal / g.headcount * 10) / 10
+      : 0;
+    return { weight_kg, weight_state: 'realtime' };
+  }
+
+  return { weight_kg: 0, weight_state: 'no_weight' };
+}
+
 export async function GET(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -22,31 +46,34 @@ export async function GET(req: NextRequest) {
 
   if (!member) return NextResponse.json({ found: false, items: [] });
 
-  const query = supabase
+  const { data: rows, error } = await supabase
     .from('attendances')
     .select(`
       final_weight_kg,
+      group_id,
       events!inner ( name, event_date, location, code ),
-      groups!inner ( is_shadow )
+      groups ( is_shadow, headcount, weigh_sessions ( weight_kg, voided ) )
     `)
     .eq('member_id', member.id)
     .eq('checked_in', true)
     .order('events(event_date)', { ascending: false });
 
-  const { data: rows, error } = SHOW_SHADOW
-    ? await query
-    : await query.eq('groups.is_shadow', false);
-
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const items = (rows ?? []).map((r: any) => ({
-    event_name:    r.events.name,
-    event_date:    r.events.event_date,
-    location:      r.events.location ?? null,
-    code:          r.events.code ?? null,
-    weight_kg:     Number(r.final_weight_kg) || 0,
-    is_shadow:     r.groups.is_shadow,
-  }));
+  const items = (rows ?? [])
+    .filter((r: any) => SHOW_SHADOW || !(r.groups?.is_shadow === true))
+    .map((r: any) => {
+      const { weight_kg, weight_state } = resolveWeight(r);
+      return {
+        event_name:   r.events.name,
+        event_date:   r.events.event_date,
+        location:     r.events.location ?? null,
+        code:         r.events.code ?? null,
+        weight_kg,
+        weight_state,
+        is_shadow:    r.groups?.is_shadow ?? false,
+      };
+    });
 
   return NextResponse.json({ found: true, items });
 }

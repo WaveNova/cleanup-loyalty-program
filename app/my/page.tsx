@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabaseBrowser } from '@/lib/member/supabase-browser';
 
 type PageState = 'loading' | 'unauthed' | 'no_record' | 'ready';
+type WeightState = 'finalized' | 'realtime' | 'no_weight';
 
 interface Summary {
   name: string;
@@ -19,18 +20,33 @@ interface TimelineItem {
   location: string | null;
   code: string | null;
   weight_kg: number;
+  weight_state: WeightState;
   is_shadow: boolean;
 }
 
-const LUMA_URL = process.env.NEXT_PUBLIC_LUMA_EVENT_URL ?? 'https://lu.ma/wavenova';
+interface NextEvent {
+  name: string | null;
+  date: string | null;
+  url: string;
+  fallback?: boolean;
+}
 
 export default function MyPage() {
-  const [state, setState]       = useState<PageState>('loading');
-  const [summary, setSummary]   = useState<Summary | null>(null);
-  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
-  const [token, setToken]       = useState<string | null>(null);
+  const [state, setState]         = useState<PageState>('loading');
+  const [summary, setSummary]     = useState<Summary | null>(null);
+  const [timeline, setTimeline]   = useState<TimelineItem[]>([]);
+  const [nextEvent, setNextEvent] = useState<NextEvent | null>(null);
+  const [token, setToken]         = useState<string | null>(null);
 
-  // ── On mount: check existing session
+  // Fetch next event on mount — no auth required
+  useEffect(() => {
+    fetch('/api/my/next-event')
+      .then(r => r.json())
+      .then(setNextEvent)
+      .catch(() => {});
+  }, []);
+
+  // On mount: check existing session
   useEffect(() => {
     supabaseBrowser.auth.getSession().then(({ data: { session } }) => {
       if (!session) { setState('unauthed'); return; }
@@ -38,7 +54,6 @@ export default function MyPage() {
       loadData(session.access_token);
     });
 
-    // Listen for auth state changes (e.g. after OAuth redirect)
     const { data: { subscription } } = supabaseBrowser.auth.onAuthStateChange(
       (_event, session) => {
         if (!session) { setState('unauthed'); setToken(null); return; }
@@ -62,10 +77,10 @@ export default function MyPage() {
       if (!sumData.found) { setState('no_record'); return; }
 
       setSummary({
-        name:                  sumData.name,
-        total_kg:              sumData.total_kg,
-        events_attended:       sumData.events_attended,
-        companions_brought:    sumData.companions_brought,
+        name:                   sumData.name,
+        total_kg:               sumData.total_kg,
+        events_attended:        sumData.events_attended,
+        companions_brought:     sumData.companions_brought,
         events_with_companions: sumData.events_with_companions,
       });
       setTimeline(tlData.items ?? []);
@@ -145,6 +160,7 @@ export default function MyPage() {
 
   // ── Ready ────────────────────────────────────────────────────────────────────
   const latest = timeline[0] ?? null;
+  const hasNextEvent = !!nextEvent?.name;
 
   return (
     <div className="page">
@@ -181,9 +197,19 @@ export default function MyPage() {
           <p className="text-muted" style={{ fontSize: '0.78rem', marginBottom: '0.25rem' }}>最近一場</p>
           <p style={{ fontWeight: 700, color: 'var(--navy)' }}>{latest.event_name}</p>
           <p style={{ marginTop: '0.3rem', fontSize: '0.95rem' }}>
-            {latest.weight_kg > 0
-              ? <>撿了 <strong style={{ color: 'var(--teal)' }}>{latest.weight_kg.toFixed(1)} kg</strong></>
-              : '出席'}
+            {latest.weight_state !== 'no_weight' ? (
+              <>
+                撿了{' '}
+                <strong style={{ color: 'var(--teal)' }}>{latest.weight_kg.toFixed(1)} kg</strong>
+                {latest.weight_state === 'realtime' && (
+                  <span style={{ fontSize: '0.78rem', color: 'var(--navy)', marginLeft: 6 }}>
+                    (今日即時)
+                  </span>
+                )}
+              </>
+            ) : (
+              '出席'
+            )}
             {latest.is_shadow && (
               <span className="badge badge-shadow" style={{ marginLeft: 8 }}>影子測試</span>
             )}
@@ -253,10 +279,17 @@ export default function MyPage() {
                   {item.location && ` · ${item.location}`}
                 </div>
                 <div style={{ marginTop: '0.25rem', fontSize: '0.88rem', color: 'var(--navy)' }}>
-                  {item.weight_kg > 0 ? (
-                    <>{item.weight_kg.toFixed(1)} kg</>
-                  ) : (
+                  {item.weight_state === 'no_weight' ? (
                     <span className="text-muted">早期場次・未計重</span>
+                  ) : (
+                    <>
+                      {item.weight_kg.toFixed(1)} kg
+                      {item.weight_state === 'realtime' && (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--teal)', marginLeft: 4 }}>
+                          (今日即時)
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -268,14 +301,21 @@ export default function MyPage() {
       {/* Footer CTA */}
       <div style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
         <a
-          href={LUMA_URL}
+          href={nextEvent?.url ?? 'https://lu.ma/cal-vR9ilrlftFoUiDt'}
           target="_blank"
           rel="noopener noreferrer"
           className="btn btn-primary"
           style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}
         >
-          報名下一場淨灘 →
+          {hasNextEvent
+            ? `報名下一場：${nextEvent!.name} ${nextEvent!.date} →`
+            : '看看所有場次 →'}
         </a>
+        {!hasNextEvent && (
+          <p className="text-muted" style={{ textAlign: 'center', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+            或追蹤 @wavenova.ocean 掌握消息
+          </p>
+        )}
         <button className="btn btn-ghost" style={{ marginTop: '0.5rem', width: '100%' }} onClick={handleLogout}>
           登出
         </button>
