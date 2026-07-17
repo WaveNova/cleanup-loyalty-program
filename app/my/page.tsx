@@ -72,6 +72,9 @@ function useCountUp(target: number, duration = 800) {
   return value;
 }
 
+// TODO(週日/週一排查後開回 true): FUNCTION_INVOCATION_FAILED — resvg 原生崩潰,見 PRD v2.9–v2.13
+const STICKER_SHARE_ENABLED = false;
+
 // ── Share helpers ─────────────────────────────────────────────────────────────
 async function fetchShareImage(type: 'full' | 'sticker', token: string): Promise<Blob> {
   const res = await fetch(`/api/my/share-card?type=${type}`, {
@@ -535,7 +538,14 @@ export default function MyPage() {
 
       {/* Share button */}
       <button
-        onClick={() => { setShareOpen(true); setShareStatus('idle'); }}
+        onClick={() => {
+          setShareOpen(true);
+          if (!STICKER_SHARE_ENABLED) {
+            handleGenerate('full');
+          } else {
+            setShareStatus('idle');
+          }
+        }}
         style={{
           display: 'block', width: '100%', background: BTN_GRAD, border: 0,
           borderRadius: 999, padding: '15px 0', fontSize: 15, fontWeight: 900,
@@ -607,7 +617,11 @@ export default function MyPage() {
             <div style={{ textAlign: 'center', marginBottom: 20 }}>
               <div style={{ width: 40, height: 4, background: 'rgba(140,200,215,0.3)', borderRadius: 999, margin: '0 auto 16px' }} />
               <div style={{ fontFamily: "var(--font-space-grotesk,sans-serif)", fontSize: 15, fontWeight: 700, color: ICE }}>
-                {shareStatus === 'ready' ? (cardType === 'full' ? '完整圖卡已生成' : '透明貼圖已生成') : '選擇分享方式'}
+                {shareStatus === 'ready'
+                  ? (cardType === 'full' ? '完整圖卡已生成' : '透明貼圖已生成')
+                  : (shareStatus === 'loading-full' || shareStatus === 'loading-sticker')
+                    ? '生成中…'
+                    : '選擇分享方式'}
               </div>
             </div>
 
@@ -639,30 +653,32 @@ export default function MyPage() {
                   </div>
                 </button>
 
-                {/* Option B — sticker */}
-                <button
-                  onClick={() => handleGenerate('sticker')}
-                  disabled={shareStatus.startsWith('loading')}
-                  style={{
-                    display: 'flex', gap: 12, alignItems: 'center', width: '100%',
-                    background: 'rgba(255,255,255,0.05)',
-                    border: `1px solid rgba(140,200,215,0.18)`,
-                    borderRadius: 14, padding: '12px 14px',
-                    cursor: 'pointer', textAlign: 'left',
-                  }}
-                >
-                  <div style={{
-                    width: 34, height: 34, borderRadius: 10,
-                    background: 'rgba(36,181,203,0.16)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
-                  }}>📸</div>
-                  <div>
-                    <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
-                      {shareStatus === 'loading-sticker' ? '生成中…' : '透明貼圖'}
+                {/* Option B — sticker (hidden until resvg crash resolved, see PRD v2.9–v2.13) */}
+                {STICKER_SHARE_ENABLED && (
+                  <button
+                    onClick={() => handleGenerate('sticker')}
+                    disabled={shareStatus.startsWith('loading')}
+                    style={{
+                      display: 'flex', gap: 12, alignItems: 'center', width: '100%',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: `1px solid rgba(140,200,215,0.18)`,
+                      borderRadius: 14, padding: '12px 14px',
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                  >
+                    <div style={{
+                      width: 34, height: 34, borderRadius: 10,
+                      background: 'rgba(36,181,203,0.16)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
+                    }}>📸</div>
+                    <div>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
+                        {shareStatus === 'loading-sticker' ? '生成中…' : '透明貼圖'}
+                      </div>
+                      <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>透明底橫條，疊在你的照片上</div>
                     </div>
-                    <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>透明底橫條，疊在你的照片上</div>
-                  </div>
-                </button>
+                  </button>
+                )}
               </>
             )}
 
@@ -729,12 +745,21 @@ export default function MyPage() {
                     下載
                   </button>
                 )}
-                <button
-                  onClick={() => setShareStatus('idle')}
-                  style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}
-                >
-                  ← 重新選擇
-                </button>
+                {STICKER_SHARE_ENABLED ? (
+                  <button
+                    onClick={() => setShareStatus('idle')}
+                    style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}
+                  >
+                    ← 重新選擇
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShareOpen(false)}
+                    style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}
+                  >
+                    ← 取消
+                  </button>
+                )}
               </>
             )}
 
