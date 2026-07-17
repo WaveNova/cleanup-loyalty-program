@@ -3,7 +3,7 @@ import { ImageResponse } from 'next/og';
 import { supabase } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+// maxDuration omitted: Hobby plan caps at 10s; Pro can add `export const maxDuration = 30`
 
 // ---------- Font loader (module-level cache) ----------
 
@@ -113,6 +113,7 @@ async function getCardData(token: string) {
 
 // ---------- Route handler ----------
 export async function GET(req: NextRequest) {
+  const _start = Date.now();
   try {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -133,7 +134,7 @@ export async function GET(req: NextRequest) {
 
   // ── Full story card (1080 × 1920) ──────────────────────────────────────────
   if (type === 'full') {
-    return new ImageResponse(
+    const img = new ImageResponse(
       (
         <div
           style={{
@@ -241,10 +242,12 @@ export async function GET(req: NextRequest) {
         fonts,
       },
     );
+    console.log(`[share-card] type=full took ${Date.now() - _start}ms`);
+    return img;
   }
 
   // ── Sticker strip (1080 × 360, transparent bg) ────────────────────────────
-  return new ImageResponse(
+  const imgSticker = new ImageResponse(
     (
       <div
         style={{
@@ -333,8 +336,10 @@ export async function GET(req: NextRequest) {
       fonts,
     },
   );
+  console.log(`[share-card] type=sticker took ${Date.now() - _start}ms`);
+  return imgSticker;
   } catch (e: any) {
-    console.error('[share-card] generation failed:', e);
+    console.error(`[share-card] generation failed after ${Date.now() - _start}ms:`, e);
     return NextResponse.json({ error: e?.message ?? 'Card generation failed' }, { status: 500 });
   }
 }

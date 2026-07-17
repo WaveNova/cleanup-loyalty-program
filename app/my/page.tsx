@@ -78,9 +78,10 @@ async function fetchShareImage(type: 'full' | 'sticker', token: string): Promise
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
+    const rawText = await res.text().catch(() => '(無法讀取回應內容)');
     let detail = '';
-    try { detail = (await res.json()).error ?? ''; } catch { /* ignore */ }
-    throw new Error(detail || `圖片生成失敗 (${res.status})`);
+    try { detail = JSON.parse(rawText).error ?? ''; } catch { /* not JSON — use raw */ }
+    throw new Error(detail || `HTTP ${res.status}: ${rawText.slice(0, 200)}`);
   }
   return res.blob();
 }
