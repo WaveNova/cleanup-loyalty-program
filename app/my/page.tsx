@@ -95,15 +95,6 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-async function shareOrDownload(blob: Blob, filename: string): Promise<'shared' | 'downloaded'> {
-  const file = new File([blob], filename, { type: 'image/png' });
-  if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
-    await navigator.share({ files: [file] });
-    return 'shared';
-  }
-  downloadBlob(blob, filename);
-  return 'downloaded';
-}
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function MyPage() {
@@ -113,7 +104,10 @@ export default function MyPage() {
   const [nextEvent, setNextEvent]   = useState<NextEvent | null>(null);
   const [token, setToken]           = useState<string | null>(null);
   const [shareOpen, setShareOpen]   = useState(false);
-  const [shareStatus, setShareStatus] = useState<'idle' | 'loading-full' | 'loading-sticker' | 'done-full' | 'done-sticker'>('idle');
+  const [shareStatus, setShareStatus] = useState<'idle' | 'loading-full' | 'loading-sticker' | 'ready' | 'done-full' | 'done-sticker'>('idle');
+  const [cardBlob, setCardBlob]     = useState<Blob | null>(null);
+  const [cardType, setCardType]     = useState<'full' | 'sticker' | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [toast, setToast]           = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -192,6 +186,15 @@ export default function MyPage() {
     }
   }
 
+  // Revoke preview object URL when sheet closes or status resets
+  useEffect(() => {
+    if (!shareOpen || shareStatus === 'idle') {
+      if (previewUrl) { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }
+      setCardBlob(null);
+      setCardType(null);
+    }
+  }, [shareOpen, shareStatus]); // eslint-disable-line
+
   async function handleLogout() {
     await supabaseBrowser.auth.signOut();
     setState('unauthed');
@@ -200,22 +203,50 @@ export default function MyPage() {
     setShareOpen(false);
   }
 
-  async function handleShare(type: 'full' | 'sticker') {
+  // Step 1: generate image only — no share call yet (preserves user gesture for step 2)
+  async function handleGenerate(type: 'full' | 'sticker') {
     if (!token) return;
     setShareStatus(type === 'full' ? 'loading-full' : 'loading-sticker');
     try {
-      const blob     = await fetchShareImage(type, token);
-      const filename = type === 'full' ? 'wavenova-ocean-footprint.png' : 'wavenova-sticker.png';
-      const result   = await shareOrDownload(blob, filename);
-      setShareStatus(type === 'full' ? 'done-full' : 'done-sticker');
-      if (result === 'downloaded' && type === 'full') {
+      const blob = await fetchShareImage(type, token);
+      const url  = URL.createObjectURL(blob);
+      setCardBlob(blob);
+      setCardType(type);
+      setPreviewUrl(url);
+      setShareStatus('ready');
+    } catch (e: any) {
+      console.error('[generate] failed:', e);
+      setShareStatus('idle');
+      showToast(e?.message ? `生成失敗：${e.message}` : '生成失敗，請再試一次');
+    }
+  }
+
+  // Step 2: called on a fresh user gesture — navigator.share() is now allowed
+  async function handleConfirmShare() {
+    if (!cardBlob || !cardType) return;
+    const filename = cardType === 'full' ? 'wavenova-ocean-footprint.png' : 'wavenova-sticker.png';
+    try {
+      const file = new File([cardBlob], filename, { type: 'image/png' });
+      if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+      } else {
+        downloadBlob(cardBlob, filename);
         showToast('已下載！用手機分享到 IG 效果最好 📱');
       }
+      setShareStatus(cardType === 'full' ? 'done-full' : 'done-sticker');
     } catch (e: any) {
-      console.error('[share] failed:', e);
-      setShareStatus('idle');
-      showToast(e?.message ? `分享失敗：${e.message}` : '分享失敗，請再試一次');
+      // User dismissed the share sheet — not an error
+      if (e?.name === 'AbortError') { setShareStatus('ready'); return; }
+      showToast(`分享失敗(${e?.name ?? 'unknown'})：${e?.message || '請改用下方下載按鈕'}`);
     }
+  }
+
+  function handleDownload() {
+    if (!cardBlob || !cardType) return;
+    const filename = cardType === 'full' ? 'wavenova-ocean-footprint.png' : 'wavenova-sticker.png';
+    downloadBlob(cardBlob, filename);
+    if (cardType === 'full') showToast('已下載！用手機分享到 IG 效果最好 📱');
+    setShareStatus(cardType === 'full' ? 'done-full' : 'done-sticker');
   }
 
   // ── Keyframe styles injected once ─────────────────────────────────────────
@@ -324,10 +355,9 @@ export default function MyPage() {
   }
 
   // ── Ready ──────────────────────────────────────────────────────────────────
-  const latest          = timeline[0] ?? null;
-  const hasNextEvent    = !!nextEvent?.name;
-  const showRankChip    = summary!.rank !== null;
-  const stickerTutorial = shareStatus === 'done-sticker';
+  const latest       = timeline[0] ?? null;
+  const hasNextEvent = !!nextEvent?.name;
+  const showRankChip = summary!.rank !== null;
 
   return (
     <div style={{
@@ -569,81 +599,138 @@ export default function MyPage() {
             <div style={{ textAlign: 'center', marginBottom: 20 }}>
               <div style={{ width: 40, height: 4, background: 'rgba(140,200,215,0.3)', borderRadius: 999, margin: '0 auto 16px' }} />
               <div style={{ fontFamily: "var(--font-space-grotesk,sans-serif)", fontSize: 15, fontWeight: 700, color: ICE }}>
-                選擇分享方式
+                {shareStatus === 'ready' ? (cardType === 'full' ? '完整圖卡已生成' : '透明貼圖已生成') : '選擇分享方式'}
               </div>
             </div>
 
-            {/* Option A — full card */}
-            <button
-              onClick={() => handleShare('full')}
-              disabled={shareStatus.startsWith('loading')}
-              style={{
-                display: 'flex', gap: 12, alignItems: 'center', width: '100%',
-                background: 'rgba(255,255,255,0.05)',
-                border: `1px solid rgba(140,200,215,0.18)`,
-                borderRadius: 14, padding: '12px 14px', marginBottom: 10,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-            >
-              <div style={{
-                width: 34, height: 34, borderRadius: 10,
-                background: 'rgba(36,181,203,0.16)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
-              }}>🌊</div>
-              <div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
-                  {shareStatus === 'loading-full' ? '生成中…' : shareStatus === 'done-full' ? '✓ 完成' : '完整圖卡（一鍵）'}
-                </div>
-                <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>深海主題故事卡，直接分享到 IG</div>
-              </div>
-            </button>
-
-            {/* Option B — sticker */}
-            <button
-              onClick={() => handleShare('sticker')}
-              disabled={shareStatus.startsWith('loading')}
-              style={{
-                display: 'flex', gap: 12, alignItems: 'center', width: '100%',
-                background: 'rgba(255,255,255,0.05)',
-                border: `1px solid rgba(140,200,215,0.18)`,
-                borderRadius: 14, padding: '12px 14px', marginBottom: 0,
-                cursor: 'pointer', textAlign: 'left',
-              }}
-            >
-              <div style={{
-                width: 34, height: 34, borderRadius: 10,
-                background: 'rgba(36,181,203,0.16)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
-              }}>📸</div>
-              <div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
-                  {shareStatus === 'loading-sticker' ? '生成中…' : shareStatus === 'done-sticker' ? '✓ 已儲存' : '透明貼圖（疊自己的照片）'}
-                </div>
-                <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>透明底橫條，疊在你的照片上</div>
-              </div>
-            </button>
-
-            {/* Three-step IG tutorial (appears after sticker is downloaded) */}
-            {stickerTutorial && (
-              <div style={{ marginTop: 18, padding: 14, background: 'rgba(36,181,203,0.06)', borderRadius: 12, border: `1px solid ${CHIP_BDR}` }}>
-                <div style={{ fontSize: 11, color: TEAL, letterSpacing: '0.15em', marginBottom: 10 }}>怎麼疊到 IG ？</div>
-                {[
-                  { icon: '①', text: '開 IG → 選你的照片或影片' },
-                  { icon: '②', text: '點「貼圖」→「相簿貼圖」' },
-                  { icon: '③', text: '選剛存的橫條 → 拖移調整後發布！' },
-                ].map(step => (
-                  <div key={step.icon} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 8 }}>
-                    <span style={{ fontFamily: "var(--font-space-grotesk,sans-serif)", fontSize: 14, fontWeight: 700, color: TEAL, flexShrink: 0, lineHeight: 1.4 }}>{step.icon}</span>
-                    <span style={{ fontSize: 12.5, color: '#c0dce5', lineHeight: 1.5 }}>{step.text}</span>
+            {/* ── Step 1: pick type ────────────────────────────────────── */}
+            {shareStatus !== 'ready' && shareStatus !== 'done-full' && shareStatus !== 'done-sticker' && (
+              <>
+                {/* Option A — full card */}
+                <button
+                  onClick={() => handleGenerate('full')}
+                  disabled={shareStatus.startsWith('loading')}
+                  style={{
+                    display: 'flex', gap: 12, alignItems: 'center', width: '100%',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: `1px solid rgba(140,200,215,0.18)`,
+                    borderRadius: 14, padding: '12px 14px', marginBottom: 10,
+                    cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <div style={{
+                    width: 34, height: 34, borderRadius: 10,
+                    background: 'rgba(36,181,203,0.16)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
+                  }}>🌊</div>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
+                      {shareStatus === 'loading-full' ? '生成中…' : '完整圖卡'}
+                    </div>
+                    <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>深海主題 1080×1920 故事卡</div>
                   </div>
-                ))}
-              </div>
+                </button>
+
+                {/* Option B — sticker */}
+                <button
+                  onClick={() => handleGenerate('sticker')}
+                  disabled={shareStatus.startsWith('loading')}
+                  style={{
+                    display: 'flex', gap: 12, alignItems: 'center', width: '100%',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: `1px solid rgba(140,200,215,0.18)`,
+                    borderRadius: 14, padding: '12px 14px',
+                    cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <div style={{
+                    width: 34, height: 34, borderRadius: 10,
+                    background: 'rgba(36,181,203,0.16)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0,
+                  }}>📸</div>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: ICE }}>
+                      {shareStatus === 'loading-sticker' ? '生成中…' : '透明貼圖'}
+                    </div>
+                    <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>透明底橫條，疊在你的照片上</div>
+                  </div>
+                </button>
+              </>
+            )}
+
+            {/* ── Step 2: preview + share/download ─────────────────────── */}
+            {shareStatus === 'ready' && previewUrl && (
+              <>
+                {/* Thumbnail */}
+                <div style={{
+                  borderRadius: 12, overflow: 'hidden', marginBottom: 14,
+                  border: `1px solid ${BORDER}`,
+                  background: 'rgba(0,0,0,0.3)',
+                  maxHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={previewUrl} alt="預覽" style={{ maxWidth: '100%', maxHeight: 180, objectFit: 'contain', display: 'block' }} />
+                </div>
+
+                {/* Share + Download buttons */}
+                <button
+                  onClick={handleConfirmShare}
+                  style={{
+                    display: 'block', width: '100%', background: BTN_GRAD, border: 0,
+                    borderRadius: 999, padding: '13px 0', fontSize: 14, fontWeight: 900,
+                    letterSpacing: '0.06em', color: '#04222b', cursor: 'pointer', marginBottom: 10,
+                  }}
+                >
+                  分享 →
+                </button>
+                <button
+                  onClick={handleDownload}
+                  style={{
+                    display: 'block', width: '100%', background: 'transparent',
+                    border: `1px solid rgba(160,220,230,0.35)`,
+                    borderRadius: 999, padding: '11px 0', fontSize: 13,
+                    letterSpacing: '0.06em', color: '#bfe6ee', cursor: 'pointer', marginBottom: 10,
+                  }}
+                >
+                  下載到相簿
+                </button>
+                <button
+                  onClick={() => setShareStatus('idle')}
+                  style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}
+                >
+                  ← 重新選擇
+                </button>
+              </>
+            )}
+
+            {/* ── Done: sticker tutorial ────────────────────────────────── */}
+            {(shareStatus === 'done-sticker' || shareStatus === 'done-full') && (
+              <>
+                <div style={{ textAlign: 'center', fontSize: 13, color: LIVE_GREEN, marginBottom: 14 }}>
+                  ✓ {shareStatus === 'done-full' ? '完成！' : '已儲存！'}
+                </div>
+                {shareStatus === 'done-sticker' && (
+                  <div style={{ padding: 14, background: 'rgba(36,181,203,0.06)', borderRadius: 12, border: `1px solid ${CHIP_BDR}`, marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: TEAL, letterSpacing: '0.15em', marginBottom: 10 }}>怎麼疊到 IG？</div>
+                    {[
+                      { icon: '①', text: '開 IG → 選你的照片或影片' },
+                      { icon: '②', text: '點「貼圖」→「相簿貼圖」' },
+                      { icon: '③', text: '選剛存的橫條 → 拖移調整後發布！' },
+                    ].map(step => (
+                      <div key={step.icon} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 8 }}>
+                        <span style={{ fontFamily: "var(--font-space-grotesk,sans-serif)", fontSize: 14, fontWeight: 700, color: TEAL, flexShrink: 0, lineHeight: 1.4 }}>{step.icon}</span>
+                        <span style={{ fontSize: 12.5, color: '#c0dce5', lineHeight: 1.5 }}>{step.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
 
             <button
               onClick={() => setShareOpen(false)}
               style={{
-                display: 'block', width: '100%', marginTop: 16,
+                display: 'block', width: '100%', marginTop: 8,
                 background: 'none', border: 'none', color: MUTED,
                 fontSize: 13, cursor: 'pointer', padding: '8px 0',
               }}
