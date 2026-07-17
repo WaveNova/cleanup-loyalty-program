@@ -3,10 +3,9 @@ import { ImageResponse } from 'next/og';
 import { supabase } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
+export const maxDuration = 30;
 
 // ---------- Font loader (module-level cache) ----------
-let _notoBuffer: ArrayBuffer | null = null;
-let _groteskBuffer: ArrayBuffer | null = null;
 
 // Chrome 41 UA: Google Fonts CSS2 API returns TTF for old UAs, woff2 for modern ones.
 // satori (next/og) only supports TTF/OTF — woff2 causes a silent parse failure → 500.
@@ -21,22 +20,23 @@ async function fetchFontFromCss(cssUrl: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
-async function getNoto(): Promise<ArrayBuffer> {
-  if (!_notoBuffer) {
-    _notoBuffer = await fetchFontFromCss(
-      'https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@700&display=swap',
-    );
-  }
-  return _notoBuffer;
-}
+interface FontCache { noto: ArrayBuffer; grotesk: ArrayBuffer }
+let _fontCache: FontCache | null = null;
+let _fontPromise: Promise<FontCache> | null = null;
 
-async function getGrotesk(): Promise<ArrayBuffer> {
-  if (!_groteskBuffer) {
-    _groteskBuffer = await fetchFontFromCss(
-      'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap',
-    );
+async function getFonts(): Promise<FontCache> {
+  if (_fontCache) return _fontCache;
+  if (!_fontPromise) {
+    _fontPromise = (async () => {
+      const [noto, grotesk] = await Promise.all([
+        fetchFontFromCss('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@700&display=swap'),
+        fetchFontFromCss('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap'),
+      ]);
+      _fontCache = { noto, grotesk };
+      return _fontCache;
+    })();
   }
-  return _groteskBuffer;
+  return _fontPromise;
 }
 
 // ---------- Auth + data helpers ----------
@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type') === 'sticker' ? 'sticker' : 'full';
 
-  const [noto, grotesk] = await Promise.all([getNoto(), getGrotesk()]);
+  const { noto, grotesk } = await getFonts();
   const fonts = [
     { name: 'SpaceGrotesk', data: grotesk, weight: 700 as const },
     { name: 'NotoSansTC',   data: noto,   weight: 700 as const },
