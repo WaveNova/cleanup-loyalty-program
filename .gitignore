@@ -3,3 +3,9 @@
 .next/
 node_modules/
 .vercel
+.DS_Store
+
+# PRD docs and design mockups — never commit
+*PRD*.md
+verification-report.md
+*.html

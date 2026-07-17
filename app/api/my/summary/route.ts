@@ -64,23 +64,50 @@ export async function GET(req: NextRequest) {
     total_raw += threeStateKg(row);
     eventSet.add(row.event_id);
   }
-  const total_kg   = Math.round(total_raw * 10) / 10;
+  const total_kg      = Math.round(total_raw * 10) / 10;
   const events_attended = eventSet.size;
 
-  const { data: companionRows, error: compErr } = await supabase
+  // Companion count
+  const { data: companionRows } = await supabase
     .from('attendances')
     .select('event_id, groups ( is_shadow )')
     .eq('registrant_member_id', member.id)
     .neq('member_id', member.id)
     .eq('checked_in', true);
 
-  if (compErr) return NextResponse.json({ error: compErr.message }, { status: 500 });
-
-  const companions = (companionRows ?? []).filter(
+  const companions = ((companionRows ?? []) as any[]).filter(
     (r: any) => SHOW_SHADOW || !(r.groups?.is_shadow === true),
   );
   const companions_brought     = companions.length;
   const events_with_companions = new Set(companions.map((c: any) => c.event_id)).size;
+
+  // Rank: find the latest realtime attendance (final=0, has group)
+  let rank: number | null = null;
+  let total_groups: number | null = null;
+
+  const realtimeRow = attendances.find(
+    (r: any) => Number(r.final_weight_kg) === 0 && r.group_id,
+  );
+
+  if (realtimeRow) {
+    const { data: sessions } = await supabase
+      .from('weigh_sessions')
+      .select('group_id, weight_kg, voided')
+      .eq('event_id', realtimeRow.event_id)
+      .eq('voided', false);
+
+    if (sessions && sessions.length > 0) {
+      const groupTotals = new Map<string, number>();
+      for (const s of sessions as any[]) {
+        const prev = groupTotals.get(s.group_id) ?? 0;
+        groupTotals.set(s.group_id, prev + Number(s.weight_kg));
+      }
+      const sorted = [...groupTotals.entries()].sort((a, b) => b[1] - a[1]);
+      total_groups = sorted.length;
+      const idx = sorted.findIndex(([gid]) => gid === realtimeRow.group_id);
+      if (idx >= 0) rank = idx + 1;
+    }
+  }
 
   return NextResponse.json({
     found: true,
@@ -89,5 +116,7 @@ export async function GET(req: NextRequest) {
     events_attended,
     companions_brought,
     events_with_companions,
+    rank,
+    total_groups,
   });
 }
