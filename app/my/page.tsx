@@ -111,6 +111,7 @@ export default function MyPage() {
   const [shareOpen, setShareOpen]   = useState(false);
   const [shareStatus, setShareStatus] = useState<'idle' | 'loading-full' | 'loading-sticker' | 'done-full' | 'done-sticker'>('idle');
   const [toast, setToast]           = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   const animKg = useCountUp(summary?.total_kg ?? 0);
 
@@ -174,10 +175,17 @@ export default function MyPage() {
   }
 
   async function handleLogin() {
-    await supabaseBrowser.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin + '/my/auth/callback' },
-    });
+    try {
+      setLoginError(null);
+      const { error } = await supabaseBrowser.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin + '/my/auth/callback' },
+      });
+      if (error) throw error;
+    } catch (e: any) {
+      console.error('[login] failed:', e);
+      setLoginError(e?.message ?? '登入初始化失敗，請截圖此訊息回報');
+    }
   }
 
   async function handleLogout() {
@@ -257,6 +265,16 @@ export default function MyPage() {
           >
             G &nbsp; 用 Google 登入
           </button>
+          {loginError && (
+            <div style={{
+              marginTop: 14, padding: '10px 12px',
+              background: 'rgba(255,80,60,0.1)', border: '1px solid rgba(255,80,60,0.3)',
+              borderRadius: 10, fontSize: 12, color: '#FF8070',
+              wordBreak: 'break-all', lineHeight: 1.6, textAlign: 'left',
+            }}>
+              {loginError}
+            </div>
+          )}
         </div>
       </div>
     );

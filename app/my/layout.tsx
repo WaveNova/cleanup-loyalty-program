@@ -1,5 +1,6 @@
 import { Space_Grotesk, Noto_Sans_TC, Space_Mono } from 'next/font/google';
 import type { Metadata } from 'next';
+import RejectionLogger from './RejectionLogger';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -33,6 +34,7 @@ export default function MyLayout({ children }: { children: React.ReactNode }) {
       className={`${spaceGrotesk.variable} ${notoSansTC.variable} ${spaceMono.variable}`}
       style={{ fontFamily: "var(--font-noto-sans-tc), 'PingFang TC', 'Noto Sans TC', system-ui, sans-serif" }}
     >
+      <RejectionLogger />
       {children}
     </div>
   );
