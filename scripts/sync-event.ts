@@ -104,7 +104,7 @@ async function syncGuest(guest: LumaGuest, eventId: string) {
     luma_guest_key:         pk,
     source:                 'luma_sync',
     checked_in:             false,
-    weight_kg:              0,
+    final_weight_kg:        0,
   }, { onConflict: 'event_id,luma_guest_key', ignoreDuplicates: false });
 
   if (mainErr && !mainErr.message.includes('duplicate')) {
@@ -130,7 +130,7 @@ async function syncGuest(guest: LumaGuest, eventId: string) {
         luma_guest_key:         null,  // companions share the registrant's QR
         source:                 'luma_sync',
         checked_in:             false,
-        weight_kg:              0,
+        final_weight_kg:        0,
       }, { onConflict: 'event_id,member_id', ignoreDuplicates: true });
 
       if (compErr && !compErr.message.includes('duplicate')) {
