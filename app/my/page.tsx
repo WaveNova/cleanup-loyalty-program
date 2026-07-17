@@ -31,7 +31,6 @@ interface TimelineItem {
 interface NextEvent {
   name: string | null;
   date: string | null;
-  url: string;
   fallback?: boolean;
 }
 
@@ -95,6 +94,12 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+function openImageForSaving(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  // intentionally not revoked — new tab needs this URL to stay valid for long-press save
+}
+
 
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function MyPage() {
@@ -110,8 +115,15 @@ export default function MyPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [toast, setToast]           = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [canNativeShare, setCanNativeShare] = useState(false);
+  const [isMobile, setIsMobile]     = useState(false);
 
   const animKg = useCountUp(summary?.total_kg ?? 0);
+
+  useEffect(() => {
+    setCanNativeShare(typeof navigator.canShare === 'function');
+    setIsMobile(/iPhone|iPad|Android/i.test(navigator.userAgent));
+  }, []);
 
   // Toast helper
   const showToast = useCallback((msg: string) => {
@@ -536,11 +548,6 @@ export default function MyPage() {
 
       {/* Calendar CTA */}
       <div>
-        {hasNextEvent && (
-          <div style={{ textAlign: 'center', fontSize: 12, color: MUTED, marginBottom: 6 }}>
-            下一場：{nextEvent!.name} {nextEvent!.date}
-          </div>
-        )}
         <a
           href={LUMA_CAL}
           target="_blank"
@@ -552,7 +559,7 @@ export default function MyPage() {
             textAlign: 'center', textDecoration: 'none', marginBottom: 8,
           }}
         >
-          看接下來的場次 →
+          {hasNextEvent ? `報名下一場：${nextEvent!.name} ${nextEvent!.date}` : '看接下來的場次'} →
         </a>
         {!hasNextEvent && (
           <p style={{ textAlign: 'center', fontSize: 11, color: MUTED }}>
@@ -672,28 +679,55 @@ export default function MyPage() {
                   <img src={previewUrl} alt="預覽" style={{ maxWidth: '100%', maxHeight: 180, objectFit: 'contain', display: 'block' }} />
                 </div>
 
-                {/* Share + Download buttons */}
-                <button
-                  onClick={handleConfirmShare}
-                  style={{
-                    display: 'block', width: '100%', background: BTN_GRAD, border: 0,
-                    borderRadius: 999, padding: '13px 0', fontSize: 14, fontWeight: 900,
-                    letterSpacing: '0.06em', color: '#04222b', cursor: 'pointer', marginBottom: 10,
-                  }}
-                >
-                  分享 →
-                </button>
-                <button
-                  onClick={handleDownload}
-                  style={{
-                    display: 'block', width: '100%', background: 'transparent',
-                    border: `1px solid rgba(160,220,230,0.35)`,
-                    borderRadius: 999, padding: '11px 0', fontSize: 13,
-                    letterSpacing: '0.06em', color: '#bfe6ee', cursor: 'pointer', marginBottom: 10,
-                  }}
-                >
-                  下載到相簿
-                </button>
+                {/* Tier 1: native share — only on devices that support it */}
+                {canNativeShare && (
+                  <button
+                    onClick={handleConfirmShare}
+                    style={{
+                      display: 'block', width: '100%', background: BTN_GRAD, border: 0,
+                      borderRadius: 999, padding: '13px 0', fontSize: 14, fontWeight: 900,
+                      letterSpacing: '0.06em', color: '#04222b', cursor: 'pointer', marginBottom: 10,
+                    }}
+                  >
+                    分享 →
+                  </button>
+                )}
+                {/* Tier 2: open in new tab — mobile path to camera roll */}
+                {isMobile && (
+                  <>
+                    <button
+                      onClick={() => {
+                        openImageForSaving(cardBlob!);
+                        setShareStatus(cardType === 'full' ? 'done-full' : 'done-sticker');
+                      }}
+                      style={{
+                        display: 'block', width: '100%', background: 'transparent',
+                        border: `1px solid rgba(160,220,230,0.35)`,
+                        borderRadius: 999, padding: '11px 0', fontSize: 13,
+                        letterSpacing: '0.06em', color: '#bfe6ee', cursor: 'pointer', marginBottom: 6,
+                      }}
+                    >
+                      在新分頁開啟圖片
+                    </button>
+                    <p style={{ fontSize: 11, color: MUTED, textAlign: 'center', marginBottom: 10, lineHeight: 1.5 }}>
+                      長按圖片選擇「儲存影像」即可加入相簿
+                    </p>
+                  </>
+                )}
+                {/* Tier 3: download — desktop only */}
+                {!isMobile && !canNativeShare && (
+                  <button
+                    onClick={handleDownload}
+                    style={{
+                      display: 'block', width: '100%', background: 'transparent',
+                      border: `1px solid rgba(160,220,230,0.35)`,
+                      borderRadius: 999, padding: '11px 0', fontSize: 13,
+                      letterSpacing: '0.06em', color: '#bfe6ee', cursor: 'pointer', marginBottom: 10,
+                    }}
+                  >
+                    下載
+                  </button>
+                )}
                 <button
                   onClick={() => setShareStatus('idle')}
                   style={{ display: 'block', width: '100%', background: 'none', border: 'none', color: MUTED, fontSize: 12, cursor: 'pointer', padding: '4px 0' }}
