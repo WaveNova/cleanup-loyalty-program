@@ -114,6 +114,7 @@ async function getCardData(token: string) {
 // ---------- Route handler ----------
 export async function GET(req: NextRequest) {
   const _start = Date.now();
+  console.log('[share-card] mem before:', (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1), 'MB');
   try {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -246,36 +247,36 @@ export async function GET(req: NextRequest) {
     return img;
   }
 
-  // ── Sticker strip (1080 × 360, transparent bg) ────────────────────────────
+  // ── Sticker strip (720 × 240, transparent bg) ────────────────────────────
+  // Scaled from 1080×360 to 720×240 (⅔) to reduce resvg alpha-channel memory usage
   const imgSticker = new ImageResponse(
     (
       <div
         style={{
-          width: 1080,
-          height: 360,
+          width: 720,
+          height: 240,
           display: 'flex',
           alignItems: 'center',
           background: 'transparent',
-          padding: '0 54px',
+          padding: '0 36px',
         }}
       >
-        {/* Glass strip — rotated slightly, baked into the image */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 32,
+            gap: 22,
             width: '100%',
             background: 'rgba(6,26,36,0.72)',
             border: '1.5px solid rgba(255,255,255,0.22)',
-            borderRadius: 28,
-            padding: '28px 44px',
+            borderRadius: 20,
+            padding: '18px 30px',
           }}
         >
           {/* Brand */}
           <div style={{
             fontFamily: 'SpaceGrotesk, sans-serif',
-            fontSize: 28,
+            fontSize: 19,
             fontWeight: 700,
             letterSpacing: '0.1em',
             color: '#24B5CB',
@@ -287,11 +288,10 @@ export async function GET(req: NextRequest) {
           {/* KG number */}
           <div style={{
             fontFamily: 'SpaceGrotesk, sans-serif',
-            fontSize: 96,
+            fontSize: 64,
             fontWeight: 700,
             lineHeight: 1,
             color: '#dff8fd',
-            textShadow: '0 0 24px rgba(36,181,203,0.7)',
             whiteSpace: 'nowrap',
             flex: 1,
             textAlign: 'center',
@@ -305,10 +305,10 @@ export async function GET(req: NextRequest) {
             flexDirection: 'column',
             alignItems: 'flex-end',
             flexShrink: 0,
-            gap: 6,
+            gap: 4,
           }}>
             <div style={{
-              fontSize: 22,
+              fontSize: 15,
               letterSpacing: '0.14em',
               color: '#bfe9f1',
             }}>
@@ -317,7 +317,7 @@ export async function GET(req: NextRequest) {
             {cardData.event_name ? (
               <div style={{
                 fontFamily: 'SpaceGrotesk, sans-serif',
-                fontSize: 18,
+                fontSize: 12,
                 letterSpacing: '0.1em',
                 color: '#8fd2de',
               }}>
@@ -329,8 +329,8 @@ export async function GET(req: NextRequest) {
       </div>
     ),
     {
-      width: 1080,
-      height: 360,
+      width: 720,
+      height: 240,
       fonts,
     },
   );
