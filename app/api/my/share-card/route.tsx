@@ -8,18 +8,23 @@ export const runtime = 'nodejs';
 let _notoBuffer: ArrayBuffer | null = null;
 let _groteskBuffer: ArrayBuffer | null = null;
 
-async function fetchFontFromCss(cssUrl: string, ua: string): Promise<ArrayBuffer> {
-  const css = await fetch(cssUrl, { headers: { 'User-Agent': ua } }).then(r => r.text());
+// Chrome 41 UA: Google Fonts CSS2 API returns TTF for old UAs, woff2 for modern ones.
+// satori (next/og) only supports TTF/OTF — woff2 causes a silent parse failure → 500.
+const LEGACY_UA = 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36';
+
+async function fetchFontFromCss(cssUrl: string): Promise<ArrayBuffer> {
+  const css = await fetch(cssUrl, { headers: { 'User-Agent': LEGACY_UA } }).then(r => r.text());
   const match = css.match(/url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/);
-  if (!match) throw new Error('Font URL not found in CSS');
-  return fetch(match[1]).then(r => r.arrayBuffer());
+  if (!match) throw new Error('Font URL not found in CSS response: ' + css.slice(0, 200));
+  const res = await fetch(match[1]);
+  if (!res.ok) throw new Error(`Font binary fetch failed: ${res.status}`);
+  return res.arrayBuffer();
 }
 
 async function getNoto(): Promise<ArrayBuffer> {
   if (!_notoBuffer) {
     _notoBuffer = await fetchFontFromCss(
       'https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@700&display=swap',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     );
   }
   return _notoBuffer;
@@ -29,7 +34,6 @@ async function getGrotesk(): Promise<ArrayBuffer> {
   if (!_groteskBuffer) {
     _groteskBuffer = await fetchFontFromCss(
       'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     );
   }
   return _groteskBuffer;
@@ -109,6 +113,7 @@ async function getCardData(token: string) {
 
 // ---------- Route handler ----------
 export async function GET(req: NextRequest) {
+  try {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -328,4 +333,8 @@ export async function GET(req: NextRequest) {
       fonts,
     },
   );
+  } catch (e: any) {
+    console.error('[share-card] generation failed:', e);
+    return NextResponse.json({ error: e?.message ?? 'Card generation failed' }, { status: 500 });
+  }
 }

@@ -78,7 +78,11 @@ async function fetchShareImage(type: 'full' | 'sticker', token: string): Promise
   const res = await fetch(`/api/my/share-card?type=${type}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error('圖片生成失敗');
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).error ?? ''; } catch { /* ignore */ }
+    throw new Error(detail || `圖片生成失敗 (${res.status})`);
+  }
   return res.blob();
 }
 
@@ -208,8 +212,9 @@ export default function MyPage() {
         showToast('已下載！用手機分享到 IG 效果最好 📱');
       }
     } catch (e: any) {
+      console.error('[share] failed:', e);
       setShareStatus('idle');
-      showToast('分享失敗，請再試一次');
+      showToast(e?.message ? `分享失敗：${e.message}` : '分享失敗，請再試一次');
     }
   }
 
