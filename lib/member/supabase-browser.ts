@@ -4,11 +4,17 @@ let _client: SupabaseClient | null = null;
 
 function getClient(): SupabaseClient {
   if (!_client) {
-    _client = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { auth: { flowType: 'pkce' } },
-    );
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) {
+      throw new Error(
+        `Supabase env vars missing on this deployment. ` +
+        `NEXT_PUBLIC_SUPABASE_URL=${url ? '✓' : '✗'} ` +
+        `NEXT_PUBLIC_SUPABASE_ANON_KEY=${key ? '✓' : '✗'}. ` +
+        `Add both as non-Sensitive Preview vars in Vercel for this branch.`,
+      );
+    }
+    _client = createClient(url, key, { auth: { flowType: 'pkce' } });
   }
   return _client;
 }

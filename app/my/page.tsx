@@ -127,17 +127,24 @@ export default function MyPage() {
 
   // Auth
   useEffect(() => {
-    supabaseBrowser.auth.getSession().then(({ data: { session } }) => {
-      if (!session) { setState('unauthed'); return; }
-      setToken(session.access_token);
-      loadData(session.access_token);
-    });
-    const { data: { subscription } } = supabaseBrowser.auth.onAuthStateChange((_e, session) => {
-      if (!session) { setState('unauthed'); setToken(null); return; }
-      setToken(session.access_token);
-      loadData(session.access_token);
-    });
-    return () => subscription.unsubscribe();
+    let sub: { unsubscribe: () => void } | null = null;
+    try {
+      supabaseBrowser.auth.getSession().then(({ data: { session } }) => {
+        if (!session) { setState('unauthed'); return; }
+        setToken(session.access_token);
+        loadData(session.access_token);
+      }).catch(() => setState('unauthed'));
+
+      const { data: { subscription } } = supabaseBrowser.auth.onAuthStateChange((_e, session) => {
+        if (!session) { setState('unauthed'); setToken(null); return; }
+        setToken(session.access_token);
+        loadData(session.access_token);
+      });
+      sub = subscription;
+    } catch {
+      setState('unauthed');
+    }
+    return () => sub?.unsubscribe();
   }, []); // eslint-disable-line
 
   async function loadData(accessToken: string) {
