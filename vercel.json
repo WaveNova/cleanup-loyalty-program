@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "app/api/my/share-card/route.tsx": {
+      "memory": 3009
+    }
+  }
+}
