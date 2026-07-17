@@ -266,12 +266,10 @@ export async function GET(req: NextRequest) {
             alignItems: 'center',
             gap: 32,
             width: '100%',
-            background: 'rgba(6,26,36,0.55)',
+            background: 'rgba(6,26,36,0.72)',
             border: '1.5px solid rgba(255,255,255,0.22)',
             borderRadius: 28,
             padding: '28px 44px',
-            transform: 'rotate(-1.2deg)',
-            boxShadow: '0 16px 44px rgba(0,0,0,0.35)',
           }}
         >
           {/* Brand */}
