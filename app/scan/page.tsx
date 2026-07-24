@@ -988,7 +988,7 @@ export default function ScanPage() {
               ← 返回
             </button>
             <h2 className="grow" style={{ textAlign: 'center' }}>新組報到</h2>
-            <div style={{ width: 40 }} />
+            <a href="/stats" target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8rem', color: 'var(--muted)', textDecoration: 'none', whiteSpace: 'nowrap' }}>📊 戰況</a>
           </div>
 
           <div className="card">
@@ -1105,7 +1105,7 @@ export default function ScanPage() {
               ← 返回
             </button>
             <h2 className="grow" style={{ textAlign: 'center' }}>回秤</h2>
-            <div style={{ width: 40 }} />
+            <a href="/stats" target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8rem', color: 'var(--muted)', textDecoration: 'none', whiteSpace: 'nowrap' }}>📊 戰況</a>
           </div>
 
           {rwStep === 'input' && (
@@ -1203,7 +1203,7 @@ export default function ScanPage() {
               ← 返回
             </button>
             <h2 className="grow" style={{ textAlign: 'center' }}>補掃入組</h2>
-            <div style={{ width: 40 }} />
+            <a href="/stats" target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8rem', color: 'var(--muted)', textDecoration: 'none', whiteSpace: 'nowrap' }}>📊 戰況</a>
           </div>
 
           {/* Step 1: enter group number */}
@@ -1389,7 +1389,7 @@ export default function ScanPage() {
               ← 返回
             </button>
             <h2 className="grow" style={{ textAlign: 'center' }}>移組</h2>
-            <div style={{ width: 40 }} />
+            <a href="/stats" target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8rem', color: 'var(--muted)', textDecoration: 'none', whiteSpace: 'nowrap' }}>📊 戰況</a>
           </div>
 
           {/* Step 1: scan the person to move */}
@@ -1509,16 +1509,25 @@ export default function ScanPage() {
                       {mgTargetInfo.headcount} → {mgTargetInfo.headcount + 1} 人
                     </div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
-                      每人{' '}
-                      {mgTargetInfo.headcount + 1 > 0
-                        ? (mgTargetInfo.total_weight / (mgTargetInfo.headcount + 1)).toFixed(1)
-                        : '—'} kg
+                      {(() => {
+                        const willTransfer = mgGuest.source_headcount - 1 === 0;
+                        const combinedWeight = willTransfer
+                          ? mgGuest.source_total_weight + mgTargetInfo.total_weight
+                          : mgTargetInfo.total_weight;
+                        return `每人 ${(combinedWeight / (mgTargetInfo.headcount + 1)).toFixed(1)} kg`;
+                      })()}
                     </div>
                   </div>
                 </div>
 
-                <p style={{ fontSize: '0.8rem', color: 'var(--muted)', textAlign: 'center', marginBottom: '1rem' }}>
-                  兩組重量均重新平分
+                <p style={{ fontSize: '0.8rem', textAlign: 'center', marginBottom: '1rem',
+                  color: mgGuest.source_headcount - 1 === 0 ? '#92400E' : 'var(--muted)',
+                  background: mgGuest.source_headcount - 1 === 0 ? '#FEF3C7' : 'transparent',
+                  borderRadius: 8, padding: mgGuest.source_headcount - 1 === 0 ? '0.4rem 0.75rem' : 0,
+                }}>
+                  {mgGuest.source_headcount - 1 === 0
+                    ? '⚠ 原組人數歸零，重量將一併轉移至目標組'
+                    : '原組重量保留於原組，不隨此人轉移'}
                 </p>
 
                 <div className="row gap-1">

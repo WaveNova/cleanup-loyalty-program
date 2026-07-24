@@ -72,14 +72,27 @@ export async function POST(req: NextRequest) {
   if (moveErr) return NextResponse.json({ error: moveErr.message }, { status: 500 });
 
   // Adjust headcounts
-  await supabase.from('groups').update({ headcount: src.headcount - 1 }).eq('id', src.id);
+  const srcNewHeadcount = src.headcount - 1;
+  await supabase.from('groups').update({ headcount: srcNewHeadcount }).eq('id', src.id);
   await supabase.from('groups').update({ headcount: tgt.headcount + 1 }).eq('id', tgt.id);
+
+  // Weight conservation: if source group now has 0 members, transfer all its
+  // weigh_sessions (including voided ones, for audit integrity) to the target group
+  let weight_transferred = false;
+  if (srcNewHeadcount === 0) {
+    await supabase
+      .from('weigh_sessions')
+      .update({ group_id: tgt.id })
+      .eq('group_id', src.id);
+    weight_transferred = true;
+  }
 
   return NextResponse.json({
     success:            true,
     from_group_no:      src.group_no,
     to_group_no:        tgt.group_no,
-    from_new_headcount: src.headcount - 1,
+    from_new_headcount: srcNewHeadcount,
     to_new_headcount:   tgt.headcount + 1,
+    weight_transferred,
   });
 }
