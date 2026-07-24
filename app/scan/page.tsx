@@ -118,7 +118,6 @@ export default function ScanPage() {
   const [amGroupNo, setAmGroupNo]         = useState('');
   const [amGroupInfo, setAmGroupInfo]     = useState<GroupInfo | null>(null);
   const [amGroupLoading, setAmGroupLoading] = useState(false);
-  const [amSkipHc, setAmSkipHc]           = useState(false);
   const [amSearchQ, setAmSearchQ]         = useState('');
   const [amConflict, setAmConflict]       = useState<{ pk: string; name: string; conflict_group_no: number } | null>(null);
   const [amResult, setAmResult]           = useState<{ msg: string } | null>(null);
@@ -178,7 +177,7 @@ export default function ScanPage() {
 
   function resetAddMember() {
     setAmStep('group-input'); setAmGroupNo(''); setAmGroupInfo(null);
-    setAmGroupLoading(false); setAmSkipHc(false); setAmSearchQ('');
+    setAmGroupLoading(false); setAmSearchQ('');
     setAmConflict(null); setAmResult(null); setAmSubmitting(false);
   }
 
@@ -610,7 +609,6 @@ export default function ScanPage() {
           pk,
           name:           guest.name,
           email:          guest.email,
-          skip_headcount: amSkipHc,
         }),
       });
       const data = await res.json();
@@ -626,10 +624,7 @@ export default function ScanPage() {
         }
         return;
       }
-      const hcNote = amSkipHc
-        ? '人數未變動'
-        : `人數 ${data.old_headcount} → ${data.new_headcount}，每人重量已重新平分`;
-      setAmResult({ msg: `✓ ${guest.name} 已加入第 ${amGroupInfo.group_no} 組（${hcNote}）` });
+      setAmResult({ msg: `✓ ${guest.name} 已加入第 ${amGroupInfo.group_no} 組（人數 ${data.old_headcount} → ${data.new_headcount}，每人重量已重新平分）` });
       showScanFb(`✓ ${guest.name} 已加入`, 'success');
       setAmStep('success');
     } catch {
@@ -1245,22 +1240,6 @@ export default function ScanPage() {
                 </div>
               </div>
 
-              <div className="card">
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.9rem', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={amSkipHc}
-                    onChange={e => setAmSkipHc(e.target.checked)}
-                    style={{ width: 'auto', minHeight: 'auto', margin: 0, accentColor: 'var(--teal)' }}
-                  />
-                  此人已計入首磅實到人數（不增加人數）
-                </label>
-                <p className="text-muted mt-1" style={{ fontSize: '0.8rem' }}>
-                  勾選：僅歸組，不 +1 人數，每人重量不變<br />
-                  不勾：人數 +1，全組重量重新平分
-                </p>
-              </div>
-
               <div className="row gap-1 mb-1">
                 <button className="btn btn-ghost grow"
                   onClick={() => { setAmStep('group-input'); setAmGroupInfo(null); }}>
@@ -1283,12 +1262,6 @@ export default function ScanPage() {
                   第 {amGroupInfo.group_no} 組
                 </span>
               </div>
-              {amSkipHc && (
-                <div style={{ background: '#FEF3C7', borderRadius: 8, padding: '0.5rem 0.75rem', marginBottom: '0.75rem', fontSize: '0.8rem', color: '#92400E' }}>
-                  ⚠ 已設定：不增加人數
-                </div>
-              )}
-
               <div className="row gap-1 mb-1">
                 {!ciScanning ? (
                   <button className="btn btn-primary grow" onClick={startScanner} disabled={ciResolving}>

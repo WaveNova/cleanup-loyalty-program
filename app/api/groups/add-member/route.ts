@@ -4,12 +4,11 @@ import { supabase } from '@/lib/supabase';
 export const runtime = 'nodejs';
 
 interface Body {
-  event_db_id:    string;
-  group_no:       number;
-  pk:             string;
-  name:           string;
-  email:          string;
-  skip_headcount: boolean;
+  event_db_id: string;
+  group_no:    number;
+  pk:          string;
+  name:        string;
+  email:       string;
 }
 
 // POST /api/groups/add-member — 補掃入組
@@ -18,7 +17,7 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); }
   catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
-  const { event_db_id, group_no, pk, name, email, skip_headcount } = body;
+  const { event_db_id, group_no, pk, name, email } = body;
   if (!event_db_id || !group_no || !pk || !email) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
@@ -73,17 +72,14 @@ export async function POST(req: NextRequest) {
 
   if (attErr) return NextResponse.json({ error: attErr.message }, { status: 500 });
 
-  // Increment headcount unless operator indicates person was already counted
+  // Always increment headcount — no exceptions
   const old_headcount = group.headcount;
-  let new_headcount = old_headcount;
-  if (!skip_headcount) {
-    new_headcount = old_headcount + 1;
-    const { error: hcErr } = await supabase
-      .from('groups')
-      .update({ headcount: new_headcount })
-      .eq('id', group.id);
-    if (hcErr) return NextResponse.json({ error: hcErr.message }, { status: 500 });
-  }
+  const new_headcount = old_headcount + 1;
+  const { error: hcErr } = await supabase
+    .from('groups')
+    .update({ headcount: new_headcount })
+    .eq('id', group.id);
+  if (hcErr) return NextResponse.json({ error: hcErr.message }, { status: 500 });
 
   return NextResponse.json({ success: true, old_headcount, new_headcount });
 }
