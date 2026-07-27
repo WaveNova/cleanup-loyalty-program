@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
 
   const { client_uuid, event_db_id, luma_event_id, weight_kg, shadow, headcount, scans } = body;
 
-  if (!client_uuid || !event_db_id || !weight_kg || !headcount || !scans?.length) {
+  if (!client_uuid || !event_db_id || weight_kg == null || !headcount || !scans?.length) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 

@@ -23,12 +23,22 @@ export default function StatsPage() {
   const [lastAt, setLastAt]     = useState<Date | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
 
-  // Check existing session
+  // Check existing session — prefer httpOnly cookie, fall back to sessionStorage
   useEffect(() => {
-    if (sessionStorage.getItem('wn_authed')) {
-      const ev = sessionStorage.getItem('wn_event');
-      if (ev) { setEvent(JSON.parse(ev)); setAuthed(true); }
-    }
+    fetch('/api/auth').then(r => r.json()).then(d => {
+      if (d.ok) {
+        const ev = sessionStorage.getItem('wn_event');
+        if (ev) { setEvent(JSON.parse(ev)); setAuthed(true); }
+      } else if (sessionStorage.getItem('wn_authed')) {
+        const ev = sessionStorage.getItem('wn_event');
+        if (ev) { setEvent(JSON.parse(ev)); setAuthed(true); }
+      }
+    }).catch(() => {
+      if (sessionStorage.getItem('wn_authed')) {
+        const ev = sessionStorage.getItem('wn_event');
+        if (ev) { setEvent(JSON.parse(ev)); setAuthed(true); }
+      }
+    });
   }, []);
 
   async function handleAuth() {
@@ -205,6 +215,9 @@ export default function StatsPage() {
             🖥 投影模式
           </button>
           <button className="btn btn-ghost" onClick={fetchStats}>重新整理</button>
+          <a href="/scan" style={{ display: 'block', textAlign: 'center', marginTop: '0.75rem', color: 'var(--teal)', textDecoration: 'none', fontSize: '0.9rem' }}>
+            ← 返回秤重站
+          </a>
         </>
       ) : (
         <div className="card text-center">載入中…</div>
