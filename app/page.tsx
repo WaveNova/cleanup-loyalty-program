@@ -22,6 +22,13 @@ export default function SetupPage() {
   const [loading, setLoading]   = useState(false);
 
   useEffect(() => {
+    // If already authed (cookie) + event in sessionStorage → skip login
+    fetch('/api/auth').then(r => r.json()).then(d => {
+      if (d.ok && sessionStorage.getItem('wn_event')) router.replace('/scan');
+    }).catch(() => {});
+  }, []); // eslint-disable-line
+
+  useEffect(() => {
     fetch('/api/events')
       .then(r => r.json())
       .then(d => {
