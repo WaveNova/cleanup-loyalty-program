@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
 
   const { client_uuid, event_db_id, luma_event_id, weight_kg, shadow, headcount, scans } = body;
 
-  if (!client_uuid || !event_db_id || !weight_kg || !headcount || !scans?.length) {
+  if (!client_uuid || !event_db_id || weight_kg == null || !headcount || !scans?.length) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
@@ -98,28 +98,52 @@ export async function POST(req: NextRequest) {
 
   if (sessErr) return NextResponse.json({ error: sessErr.message }, { status: 500 });
 
-  // Upsert members + attendances for each scan
+  // Upsert members + attendances for each scan.
+  // First pass: collect the first valid member_id for use as registrant_member_id
+  // on no-email scans (registrant_member_id is NOT NULL).
+  let firstMemberId: string | null = null;
+  const memberIdByPk: Record<string, string> = {};
+
   for (const scan of scans) {
     const email = scan.email?.toLowerCase().trim();
     if (!email) continue;
-
     const { data: member } = await supabase
       .from('members')
       .upsert({ email, name: scan.name }, { onConflict: 'email' })
       .select('id')
       .single();
-
     if (!member) continue;
+    memberIdByPk[scan.pk] = member.id;
+    if (!firstMemberId) firstMemberId = member.id;
+  }
 
-    await supabase.from('attendances').upsert({
-      event_id:             event_db_id,
-      member_id:            member.id,
-      registrant_member_id: member.id,
-      group_id,
-      luma_guest_key:       scan.pk,
-      source:               'scan',
-      checked_in:           true,
-    }, { onConflict: 'event_id,luma_guest_key', ignoreDuplicates: false });
+  for (const scan of scans) {
+    const email = scan.email?.toLowerCase().trim();
+    if (email) {
+      const memberId = memberIdByPk[scan.pk];
+      if (!memberId) continue;
+      await supabase.from('attendances').upsert({
+        event_id:             event_db_id,
+        member_id:            memberId,
+        registrant_member_id: memberId,
+        group_id,
+        luma_guest_key:       scan.pk,
+        source:               'scan',
+        checked_in:           true,
+      }, { onConflict: 'event_id,luma_guest_key', ignoreDuplicates: false });
+    } else {
+      // No email — create attendance with member_id=null if we have a registrant to reference
+      if (!firstMemberId) continue;
+      await supabase.from('attendances').upsert({
+        event_id:             event_db_id,
+        member_id:            null,
+        registrant_member_id: firstMemberId,
+        group_id,
+        luma_guest_key:       scan.pk,
+        source:               'scan',
+        checked_in:           true,
+      }, { onConflict: 'event_id,luma_guest_key', ignoreDuplicates: false });
+    }
   }
 
   return NextResponse.json({ group_no, group_id, session_id: session.id });

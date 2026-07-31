@@ -18,11 +18,14 @@ interface ScanEntry {
   actual_count: number;
 }
 
-interface GroupResult { group_no: number; headcount: number; weight_kg: number; session_id: string; }
-interface GroupInfo   { group_id: string; group_no: number; headcount: number; total_weight: number; }
-interface Toast       { msg: string; type: 'ok' | 'err' | 'info'; }
+interface GroupResult   { group_no: number; headcount: number; weight_kg: number; session_id: string; }
+interface GroupInfo     { group_id: string; group_no: number; headcount: number; total_weight: number; }
+interface Toast         { msg: string; type: 'ok' | 'err' | 'info'; }
+interface RecentSession { id: string; group_id: string; group_no: number; weight_kg: number; voided: boolean; created_at: string; }
+interface Member        { name: string | null; email: string | null; }
 
-type Mode        = 'home' | 'checkin' | 'reweigh' | 'addmember' | 'movegroup';
+type Mode        = 'home' | 'checkin' | 'reweigh' | 'addmember' | 'movegroup' | 'lookup';
+type LkTab       = 'by-group' | 'by-person';
 type ReweighStep = 'input' | 'confirm' | 'done';
 type AmStep      = 'group-input' | 'group-confirm' | 'scanning' | 'conflict' | 'success';
 type MgStep      = 'scanning' | 'group-input' | 'confirm' | 'success';
@@ -112,6 +115,15 @@ export default function ScanPage() {
   const [rwSubmitting, setRwSubmitting]   = useState(false);
   const [rwNewTotal, setRwNewTotal]       = useState<number | null>(null);
   const [rwLoading, setRwLoading]         = useState(false);
+  const [rwMembersOpen, setRwMembersOpen] = useState(false);
+  const [rwMembers, setRwMembers]         = useState<Member[]>([]);
+  const [rwMembersLoading, setRwMembersLoading] = useState(false);
+
+  // ── recent sessions (home screen undo/edit)
+  const [recentSessions, setRecentSessions]   = useState<RecentSession[]>([]);
+  const [editingId, setEditingId]             = useState<string | null>(null);
+  const [editingWeight, setEditingWeight]     = useState('');
+  const [editSubmitting, setEditSubmitting]   = useState(false);
 
   // ── Feature A — 補掃入組
   const [amStep, setAmStep]               = useState<AmStep>('group-input');
@@ -132,6 +144,16 @@ export default function ScanPage() {
   const [mgSearchQ, setMgSearchQ]         = useState('');
   const [mgSubmitting, setMgSubmitting]   = useState(false);
   const [mgResult, setMgResult]           = useState<{ name: string; from_no: number; to_no: number; from_hc: number; to_hc: number } | null>(null);
+
+  // ── Lookup mode
+  const [lkTab, setLkTab]                 = useState<LkTab>('by-group');
+  const [lkGroupNo, setLkGroupNo]         = useState('');
+  const [lkGroupInfo, setLkGroupInfo]     = useState<GroupInfo | null>(null);
+  const [lkMembers, setLkMembers]         = useState<Member[]>([]);
+  const [lkGroupLoading, setLkGroupLoading] = useState(false);
+  const [lkPersonQ, setLkPersonQ]         = useState('');
+  const [lkPersonResult, setLkPersonResult] = useState<{ name: string; email: string; group_no: number | null; groupInfo: GroupInfo | null } | null>(null);
+  const [lkPersonLoading, setLkPersonLoading] = useState(false);
 
   // ── Feature C — Scan Feedback
   const [scanFb, setScanFb]               = useState<ScanFb | null>(null);
@@ -173,6 +195,51 @@ export default function ScanPage() {
   function resetReweigh() {
     setRwGroupNo(''); setRwGroupInfo(null); setRwWeight('');
     setRwStep('input'); setRwNewTotal(null);
+    setRwMembersOpen(false); setRwMembers([]);
+  }
+
+  function isValidWeight(w: string): boolean {
+    if (w === '') return false;
+    const n = parseFloat(w);
+    return !isNaN(n) && n >= 0;
+  }
+
+  async function loadRecentSessions(ev: EventInfo) {
+    try {
+      const res = await fetch(`/api/weigh?event_id=${ev.id}`);
+      if (res.ok) setRecentSessions((await res.json()).sessions ?? []);
+    } catch {}
+  }
+
+  async function fetchRwMembers(groupId: string) {
+    setRwMembersLoading(true);
+    try {
+      const res = await fetch(`/api/groups/members?group_id=${groupId}`);
+      if (res.ok) setRwMembers((await res.json()).members ?? []);
+    } catch {}
+    setRwMembersLoading(false);
+  }
+
+  async function handleVoidSession(sessionId: string) {
+    await fetch('/api/weigh', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (event) loadRecentSessions(event);
+  }
+
+  async function handleEditSubmit(sessionId: string) {
+    if (!isValidWeight(editingWeight)) return;
+    setEditSubmitting(true);
+    try {
+      await fetch('/api/weigh', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, weight_kg: parseFloat(editingWeight) }),
+      });
+      setEditingId(null);
+      if (event) loadRecentSessions(event);
+    } catch {}
+    setEditSubmitting(false);
   }
 
   function resetAddMember() {
@@ -186,7 +253,49 @@ export default function ScanPage() {
     setMgTargetInfo(null); setMgSearchQ(''); setMgResult(null); setMgSubmitting(false);
   }
 
-  // ── mount: load session, prefetch cache
+  function resetLookup() {
+    setLkTab('by-group'); setLkGroupNo(''); setLkGroupInfo(null); setLkMembers([]);
+    setLkGroupLoading(false); setLkPersonQ(''); setLkPersonResult(null); setLkPersonLoading(false);
+  }
+
+  async function handleLkGroupLookup() {
+    if (!event || !lkGroupNo) return;
+    const no = parseInt(lkGroupNo);
+    if (isNaN(no) || no < 1) { showToast('請輸入有效組號', 'err'); return; }
+    setLkGroupLoading(true);
+    setLkGroupInfo(null); setLkMembers([]);
+    try {
+      const res = await fetch(`/api/groups?event_id=${event.id}&group_no=${no}`);
+      if (res.status === 404) { showToast('查無此組號', 'err'); return; }
+      if (res.ok) {
+        const gi: GroupInfo = await res.json();
+        setLkGroupInfo(gi);
+        const mRes = await fetch(`/api/groups/members?group_id=${gi.group_id}`);
+        if (mRes.ok) setLkMembers((await mRes.json()).members ?? []);
+      }
+    } catch { showToast('網路錯誤', 'err'); }
+    finally { setLkGroupLoading(false); }
+  }
+
+  async function handleLkPersonSelect(pk: string, g: { name: string; email: string }) {
+    if (!event) return;
+    setLkPersonLoading(true);
+    setLkPersonResult(null);
+    try {
+      const res = await fetch(`/api/resolve?pk=${pk}&event_id=${event.luma_event_id}&db_event_id=${event.id}`);
+      if (!res.ok) { showToast('查詢失敗', 'err'); return; }
+      const data = await res.json();
+      let groupInfo: GroupInfo | null = null;
+      if (data.already_group_no != null) {
+        const gr = await fetch(`/api/groups?event_id=${event.id}&group_no=${data.already_group_no}`);
+        if (gr.ok) groupInfo = await gr.json();
+      }
+      setLkPersonResult({ name: g.name, email: g.email, group_no: data.already_group_no ?? null, groupInfo });
+    } catch { showToast('網路錯誤', 'err'); }
+    finally { setLkPersonLoading(false); }
+  }
+
+  // ── mount: load session, prefetch cache, load recent sessions
   useEffect(() => {
     const ev = sessionStorage.getItem('wn_event');
     if (!ev) { router.replace('/'); return; }
@@ -197,7 +306,13 @@ export default function ScanPage() {
       .then(r => r.json())
       .then(d => setOfflineCache(d.cache ?? {}))
       .catch(() => {});
-  }, [router]);
+    loadRecentSessions(parsed);
+  }, [router]); // eslint-disable-line
+
+  // ── reload recent sessions when returning home
+  useEffect(() => {
+    if (mode === 'home' && event) loadRecentSessions(event);
+  }, [mode]); // eslint-disable-line
 
   // ── online/offline
   useEffect(() => {
@@ -413,7 +528,7 @@ export default function ScanPage() {
   // ── submit check-in
   async function handleCheckinSubmit() {
     if (!event) return;
-    if (!ciWeight || parseFloat(ciWeight) <= 0) { showToast('請輸入重量', 'err'); return; }
+    if (!isValidWeight(ciWeight)) { showToast('請輸入重量（可為 0）', 'err'); return; }
     if (ciScans.length === 0) { showToast('請先掃描 QR', 'err'); return; }
 
     const headcount   = ciScans.reduce((s, e) => s + e.actual_count, 0);
@@ -486,7 +601,7 @@ export default function ScanPage() {
   // ── submit re-weigh
   async function handleRwSubmit() {
     if (!event || !rwGroupInfo) return;
-    if (!rwWeight || parseFloat(rwWeight) <= 0) { showToast('請輸入重量', 'err'); return; }
+    if (!isValidWeight(rwWeight)) { showToast('請輸入重量（可為 0）', 'err'); return; }
 
     const weight_kg   = parseFloat(rwWeight);
     const client_uuid = crypto.randomUUID();
@@ -820,6 +935,15 @@ export default function ScanPage() {
         .slice(0, 8)
     : [];
 
+  const lkPersonResults = lkPersonQ.length >= 2
+    ? Object.entries(offlineCache)
+        .filter(([, g]) =>
+          g.name.toLowerCase().includes(lkPersonQ.toLowerCase()) ||
+          g.email.toLowerCase().includes(lkPersonQ.toLowerCase())
+        )
+        .slice(0, 8)
+    : [];
+
   const ciHeadcount   = ciScans.reduce((s, e) => s + e.actual_count, 0);
   const ciKgPerPerson = ciHeadcount > 0 && ciWeight
     ? (parseFloat(ciWeight) / ciHeadcount).toFixed(1) : '--';
@@ -938,6 +1062,7 @@ export default function ScanPage() {
 
       {/* ── HOME ─────────────────────────────────────────────────────────── */}
       {mode === 'home' && (
+        <>
         <div style={{ paddingTop: '0.5rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1rem' }}>
             <button
@@ -962,14 +1087,86 @@ export default function ScanPage() {
               🔍&nbsp; 補掃入組
             </button>
           </div>
-          <button
-            className="btn btn-ghost"
-            style={{ fontSize: '0.9rem', minHeight: 48, opacity: 0.75 }}
-            onClick={() => { resetMoveGroup(); setMode('movegroup'); }}
-          >
-            ↔&nbsp; 移組
-          </button>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button
+              className="btn btn-ghost"
+              style={{ fontSize: '0.9rem', minHeight: 48, opacity: 0.75, flex: 1 }}
+              onClick={() => { resetMoveGroup(); setMode('movegroup'); }}
+            >
+              ↔&nbsp; 移組
+            </button>
+            <button
+              className="btn btn-ghost"
+              style={{ fontSize: '0.9rem', minHeight: 48, opacity: 0.75, flex: 1 }}
+              onClick={() => { resetLookup(); setMode('lookup'); }}
+            >
+              🔎&nbsp; 查詢
+            </button>
+          </div>
         </div>
+
+        {recentSessions.length > 0 && (
+          <div className="card" style={{ marginTop: '0.75rem' }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', fontWeight: 600 }}>最近過磅紀錄</div>
+            {recentSessions.map(s => (
+              <div key={s.id} style={{ padding: '0.45rem 0', borderTop: '1px solid var(--border)' }}>
+                {editingId === s.id ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--muted)', flex: '0 0 auto' }}>第 {s.group_no} 組</span>
+                    <input
+                      type="number" inputMode="decimal" step="0.1" min="0"
+                      value={editingWeight}
+                      onChange={e => setEditingWeight(e.target.value)}
+                      style={{ width: 72, fontSize: '0.9rem', minHeight: 34 }}
+                      // eslint-disable-next-line jsx-a11y/no-autofocus
+                      autoFocus
+                      onKeyDown={e => e.key === 'Enter' && handleEditSubmit(s.id)}
+                    />
+                    <span style={{ fontSize: '0.82rem' }}>kg</span>
+                    <button className="btn btn-primary" style={{ fontSize: '0.75rem', minHeight: 34, padding: '0 0.65rem', flex: '0 0 auto' }}
+                      onClick={() => handleEditSubmit(s.id)}
+                      disabled={editSubmitting || !isValidWeight(editingWeight)}>
+                      確認
+                    </button>
+                    <button className="btn btn-ghost" style={{ fontSize: '0.75rem', minHeight: 34, padding: '0 0.65rem', flex: '0 0 auto' }}
+                      onClick={() => setEditingId(null)}>
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.88rem', flex: '0 0 auto' }}>第 {s.group_no} 組</span>
+                    <span style={{
+                      fontWeight: 700, marginLeft: 8, fontSize: '0.88rem', flex: 1,
+                      color: s.voided ? '#9CA3AF' : 'var(--navy)',
+                      textDecoration: s.voided ? 'line-through' : 'none',
+                    }}>
+                      {s.weight_kg} kg
+                    </span>
+                    {s.voided
+                      ? <span style={{ fontSize: '0.75rem', color: '#9CA3AF' }}>已撤銷</span>
+                      : (
+                        <>
+                          <button
+                            style={{ background: 'none', border: 'none', color: 'var(--teal)', fontSize: '0.8rem', cursor: 'pointer', padding: '0.2rem 0.4rem' }}
+                            onClick={() => { setEditingId(s.id); setEditingWeight(String(s.weight_kg)); }}>
+                            編輯
+                          </button>
+                          <button
+                            style={{ background: 'none', border: 'none', color: 'var(--red)', fontSize: '0.8rem', cursor: 'pointer', padding: '0.2rem 0.4rem' }}
+                            onClick={() => handleVoidSession(s.id)}>
+                            撤銷
+                          </button>
+                        </>
+                      )
+                    }
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        </>
       )}
 
       {/* ── CHECK-IN ─────────────────────────────────────────────────────── */}
@@ -1082,7 +1279,7 @@ export default function ScanPage() {
             className="btn btn-navy"
             style={{ marginBottom: '2rem' }}
             onClick={handleCheckinSubmit}
-            disabled={ciScans.length === 0 || !ciWeight || ciSubmitting}
+            disabled={ciScans.length === 0 || !isValidWeight(ciWeight) || ciSubmitting}
           >
             {ciSubmitting ? '上傳中…' : '送出 → 取得組號'}
           </button>
@@ -1138,6 +1335,39 @@ export default function ScanPage() {
                 <div style={{ marginTop: '0.75rem', fontWeight: 600 }}>
                   👥 {rwGroupInfo.headcount} 人 &nbsp;·&nbsp; 已累計 <strong>{rwGroupInfo.total_weight.toFixed(1)} kg</strong>
                 </div>
+                <div style={{ borderTop: '1px solid #BFDBFE', marginTop: '0.75rem', paddingTop: '0.5rem' }}>
+                  <button
+                    style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: '0.82rem', padding: '0.2rem 0' }}
+                    onClick={() => {
+                      const next = !rwMembersOpen;
+                      setRwMembersOpen(next);
+                      if (next && rwMembers.length === 0) fetchRwMembers(rwGroupInfo.group_id);
+                    }}
+                  >
+                    {rwMembersOpen ? '▲ 收起組員名單' : '▼ 查看組員名單'}
+                  </button>
+                  {rwMembersOpen && (
+                    <div style={{ marginTop: '0.4rem', textAlign: 'left' }}>
+                      {rwMembersLoading
+                        ? <p style={{ fontSize: '0.82rem', color: 'var(--muted)', margin: 0 }}>載入中…</p>
+                        : rwMembers.length === 0
+                          ? <p style={{ fontSize: '0.82rem', color: 'var(--muted)', margin: 0 }}>尚無掃碼成員</p>
+                          : rwMembers.map((m, i) => (
+                            <div key={i} style={{
+                              padding: '0.3rem 0',
+                              borderTop: i > 0 ? '1px solid #BFDBFE' : 'none',
+                              fontSize: '0.82rem',
+                            }}>
+                              <strong>{m.name ?? '（無姓名）'}</strong>
+                              <span style={{ color: 'var(--muted)', marginLeft: 6 }}>
+                                {m.email ?? '（同行，無登記 email）'}
+                              </span>
+                            </div>
+                          ))
+                      }
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="card">
@@ -1159,7 +1389,7 @@ export default function ScanPage() {
                 </button>
                 <button className="btn btn-navy grow"
                   onClick={handleRwSubmit}
-                  disabled={!rwWeight || rwSubmitting}>
+                  disabled={!isValidWeight(rwWeight) || rwSubmitting}>
                   {rwSubmitting ? '上傳中…' : '確認回秤'}
                 </button>
               </div>
@@ -1539,6 +1769,135 @@ export default function ScanPage() {
                 返回主頁
               </button>
             </div>
+          )}
+        </>
+      )}
+
+      {/* ── LOOKUP (查詢) ────────────────────────────────────────────────── */}
+      {mode === 'lookup' && (
+        <>
+          <div className="row mb-1" style={{ alignItems: 'center' }}>
+            <button
+              onClick={() => { setMode('home'); resetLookup(); }}
+              style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: '0.9rem', padding: '0.5rem 0' }}
+            >
+              ← 返回
+            </button>
+            <h2 className="grow" style={{ textAlign: 'center' }}>查詢</h2>
+            <a href="/stats" target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.8rem', color: 'var(--muted)', textDecoration: 'none', whiteSpace: 'nowrap' }}>📊 戰況</a>
+          </div>
+
+          {/* Tab switcher */}
+          <div style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '1.5px solid var(--border)', marginBottom: '0.75rem' }}>
+            <button
+              style={{ flex: 1, padding: '0.6rem', fontSize: '0.9rem', fontWeight: lkTab === 'by-group' ? 700 : 400, border: 'none', cursor: 'pointer', background: lkTab === 'by-group' ? 'var(--navy)' : 'transparent', color: lkTab === 'by-group' ? '#fff' : 'var(--text)' }}
+              onClick={() => { setLkTab('by-group'); setLkPersonQ(''); setLkPersonResult(null); }}
+            >
+              組號 → 組員
+            </button>
+            <button
+              style={{ flex: 1, padding: '0.6rem', fontSize: '0.9rem', fontWeight: lkTab === 'by-person' ? 700 : 400, border: 'none', cursor: 'pointer', background: lkTab === 'by-person' ? 'var(--navy)' : 'transparent', color: lkTab === 'by-person' ? '#fff' : 'var(--text)' }}
+              onClick={() => { setLkTab('by-person'); setLkGroupNo(''); setLkGroupInfo(null); setLkMembers([]); }}
+            >
+              姓名/Email → 組別
+            </button>
+          </div>
+
+          {/* Tab: by group */}
+          {lkTab === 'by-group' && (
+            <>
+              <div className="card">
+                <label>組號</label>
+                <input
+                  type="number" inputMode="numeric"
+                  value={lkGroupNo}
+                  onChange={e => { setLkGroupNo(e.target.value); setLkGroupInfo(null); setLkMembers([]); }}
+                  placeholder="輸入組號"
+                  style={{ fontSize: '2.5rem', fontWeight: 800 }}
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                  onKeyDown={e => e.key === 'Enter' && handleLkGroupLookup()}
+                />
+                <button
+                  className="btn btn-primary"
+                  style={{ marginTop: '1rem' }}
+                  onClick={handleLkGroupLookup}
+                  disabled={!lkGroupNo || lkGroupLoading}
+                >
+                  {lkGroupLoading ? '查詢中…' : '查詢'}
+                </button>
+              </div>
+
+              {lkGroupInfo && (
+                <div className="card" style={{ background: '#EFF6FF' }}>
+                  <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>第</div>
+                    <div style={{ fontSize: '3rem', fontWeight: 900, color: 'var(--navy)', lineHeight: 1 }}>{lkGroupInfo.group_no}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>組</div>
+                    <div style={{ marginTop: '0.5rem', fontWeight: 600 }}>
+                      👥 {lkGroupInfo.headcount} 人 &nbsp;·&nbsp; 累計 <strong>{lkGroupInfo.total_weight.toFixed(1)} kg</strong>
+                    </div>
+                  </div>
+                  <div style={{ borderTop: '1px solid #BFDBFE', paddingTop: '0.5rem' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.3rem', fontWeight: 600 }}>組員名單</div>
+                    {lkMembers.length === 0
+                      ? <p style={{ fontSize: '0.85rem', color: 'var(--muted)', margin: 0 }}>尚無掃碼成員</p>
+                      : lkMembers.map((m, i) => (
+                        <div key={i} style={{ padding: '0.3rem 0', borderTop: i > 0 ? '1px solid #BFDBFE' : 'none', fontSize: '0.85rem' }}>
+                          <strong>{m.name ?? '（無姓名）'}</strong>
+                          <span style={{ color: 'var(--muted)', marginLeft: 6 }}>{m.email ?? '（同行，無登記 email）'}</span>
+                        </div>
+                      ))
+                    }
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Tab: by person */}
+          {lkTab === 'by-person' && (
+            <>
+              <div className="card">
+                <label>🔍 姓名 / Email 搜尋</label>
+                <input
+                  type="search"
+                  value={lkPersonQ}
+                  onChange={e => { setLkPersonQ(e.target.value); setLkPersonResult(null); }}
+                  placeholder="輸入姓名或 Email"
+                  style={{ minHeight: 44, fontSize: '0.95rem' }}
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                />
+                {lkPersonLoading && <p className="text-muted text-center mb-1">查詢中…</p>}
+                {lkPersonResults.map(([pk, g]) => (
+                  <div key={pk}
+                    onClick={() => handleLkPersonSelect(pk, g)}
+                    style={{ padding: '0.65rem 0.85rem', borderBottom: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.9rem' }}
+                  >
+                    <strong>{g.name}</strong>
+                    <span className="text-muted" style={{ marginLeft: 8 }}>{g.email}</span>
+                  </div>
+                ))}
+              </div>
+
+              {lkPersonResult && (
+                <div className="card" style={{ background: lkPersonResult.group_no != null ? '#F0FDF4' : '#FEF3C7' }}>
+                  <div style={{ fontWeight: 700, fontSize: '1rem' }}>{lkPersonResult.name}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.2rem' }}>{lkPersonResult.email}</div>
+                  {lkPersonResult.group_no != null && lkPersonResult.groupInfo ? (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <span style={{ fontWeight: 600 }}>第 <strong style={{ fontSize: '1.3rem', color: 'var(--navy)' }}>{lkPersonResult.group_no}</strong> 組</span>
+                      <span style={{ color: 'var(--muted)', marginLeft: 12, fontSize: '0.9rem' }}>
+                        {lkPersonResult.groupInfo.headcount} 人 &nbsp;·&nbsp; 累計 {lkPersonResult.groupInfo.total_weight.toFixed(1)} kg
+                      </span>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: '0.75rem', color: '#92400E', fontSize: '0.9rem' }}>尚未報到，未分配到任何組</div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
