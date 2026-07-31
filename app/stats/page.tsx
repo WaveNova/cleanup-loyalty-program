@@ -80,6 +80,9 @@ export default function StatsPage() {
     return (
       <div className="page" style={{ maxWidth: 420 }}>
         <div style={{ padding: '2rem 0 1.5rem' }}>
+          <a href="/" style={{ display: 'inline-block', color: 'var(--teal)', textDecoration: 'none', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+            ← 返回首頁
+          </a>
           <h1>📊 戰況頁</h1>
           <p className="text-muted mt-1">請輸入通行碼</p>
         </div>
