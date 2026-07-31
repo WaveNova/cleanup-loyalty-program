@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-interface EventInfo { id: string; name: string; event_date: string; }
+interface EventInfo { id: string; luma_event_id: string; name: string; event_date: string; }
 interface GroupStat { group_no: number; headcount: number; total_weight: number; }
 
 interface StatsData {
@@ -218,7 +218,7 @@ export default function StatsPage() {
             🖥 投影模式
           </button>
           <button className="btn btn-ghost" onClick={fetchStats}>重新整理</button>
-          <a href="/scan" style={{ display: 'block', textAlign: 'center', marginTop: '0.75rem', color: 'var(--teal)', textDecoration: 'none', fontSize: '0.9rem' }}>
+          <a href={`/scan?event_id=${event?.luma_event_id ?? ''}`} style={{ display: 'block', textAlign: 'center', marginTop: '0.75rem', color: 'var(--teal)', textDecoration: 'none', fontSize: '0.9rem' }}>
             ← 返回秤重站
           </a>
         </>

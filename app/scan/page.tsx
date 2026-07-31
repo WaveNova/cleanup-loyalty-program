@@ -297,16 +297,40 @@ export default function ScanPage() {
 
   // ── mount: load session, prefetch cache, load recent sessions
   useEffect(() => {
-    const ev = sessionStorage.getItem('wn_event');
-    if (!ev) { router.replace('/'); return; }
-    const parsed = JSON.parse(ev) as EventInfo;
-    setEvent(parsed);
-    setQueueLen(loadQueue().length);
-    fetch(`/api/guests?event_id=${parsed.luma_event_id}`)
-      .then(r => r.json())
-      .then(d => setOfflineCache(d.cache ?? {}))
-      .catch(() => {});
-    loadRecentSessions(parsed);
+    const stored = sessionStorage.getItem('wn_event');
+    if (stored) {
+      const parsed = JSON.parse(stored) as EventInfo;
+      setEvent(parsed);
+      setQueueLen(loadQueue().length);
+      fetch(`/api/guests?event_id=${parsed.luma_event_id}`)
+        .then(r => r.json())
+        .then(d => setOfflineCache(d.cache ?? {}))
+        .catch(() => {});
+      loadRecentSessions(parsed);
+      return;
+    }
+
+    // No sessionStorage — may have come from stats page in a new tab.
+    // If URL carries event_id and cookie is valid, re-hydrate without re-prompting.
+    const urlEventId = new URLSearchParams(window.location.search).get('event_id');
+    if (!urlEventId) { router.replace('/'); return; }
+
+    fetch('/api/auth').then(r => r.json()).then(authData => {
+      if (!authData.ok) { router.replace('/'); return; }
+      fetch('/api/events').then(r => r.json()).then(d => {
+        const matched = (d.events ?? []).find((e: EventInfo) => e.luma_event_id === urlEventId);
+        if (!matched) { router.replace('/'); return; }
+        sessionStorage.setItem('wn_event', JSON.stringify(matched));
+        sessionStorage.setItem('wn_authed', '1');
+        setEvent(matched);
+        setQueueLen(loadQueue().length);
+        fetch(`/api/guests?event_id=${matched.luma_event_id}`)
+          .then(r => r.json())
+          .then(d => setOfflineCache(d.cache ?? {}))
+          .catch(() => {});
+        loadRecentSessions(matched);
+      }).catch(() => router.replace('/'));
+    }).catch(() => router.replace('/'));
   }, [router]); // eslint-disable-line
 
   // ── reload recent sessions when returning home

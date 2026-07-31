@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabase
     .from('attendances')
-    .select('members(name, email)')
+    .select('members!member_id(name, email)')
     .eq('group_id', groupId)
     .eq('checked_in', true);
 
