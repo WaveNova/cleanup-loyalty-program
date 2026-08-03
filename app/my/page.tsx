@@ -1,7 +1,11 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { MapMarker } from '@/app/api/my/map/route';
+
+const FootprintMap = dynamic(() => import('./FootprintMap'), { ssr: false });
 import { supabaseBrowser } from '@/lib/member/supabase-browser';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -14,6 +18,7 @@ interface Summary {
   events_attended: number;
   companions_brought: number;
   events_with_companions: number;
+  unique_locations: number;
   rank: number | null;
   total_groups: number | null;
 }
@@ -111,6 +116,7 @@ export default function MyPage() {
   const [summary, setSummary]       = useState<Summary | null>(null);
   const [timeline, setTimeline]     = useState<TimelineItem[]>([]);
   const [nextEvent, setNextEvent]   = useState<NextEvent | null>(null);
+  const [mapMarkers, setMapMarkers]  = useState<MapMarker[]>([]);
   const [token, setToken]           = useState<string | null>(null);
   const [shareOpen, setShareOpen]   = useState(false);
   const [shareStatus, setShareStatus] = useState<'idle' | 'loading-full' | 'loading-sticker' | 'ready' | 'done-full' | 'done-sticker'>('idle');
@@ -166,11 +172,14 @@ export default function MyPage() {
     setState('loading');
     const headers = { Authorization: `Bearer ${accessToken}` };
     try {
-      const [sumRes, tlRes] = await Promise.all([
+      const [sumRes, tlRes, mapRes] = await Promise.all([
         fetch('/api/my/summary',  { headers }),
         fetch('/api/my/timeline', { headers }),
+        fetch('/api/my/map',      { headers }),
       ]);
-      const [sumData, tlData] = await Promise.all([sumRes.json(), tlRes.json()]);
+      const [sumData, tlData, mapData] = await Promise.all([
+        sumRes.json(), tlRes.json(), mapRes.json(),
+      ]);
       if (!sumData.found) { setState('no_record'); return; }
       setSummary({
         name:                   sumData.name,
@@ -178,10 +187,12 @@ export default function MyPage() {
         events_attended:        sumData.events_attended,
         companions_brought:     sumData.companions_brought,
         events_with_companions: sumData.events_with_companions,
+        unique_locations:       sumData.unique_locations ?? 0,
         rank:                   sumData.rank   ?? null,
         total_groups:           sumData.total_groups ?? null,
       });
       setTimeline(tlData.items ?? []);
+      setMapMarkers(mapData.markers ?? []);
       setState('ready');
     } catch {
       setState('unauthed');
@@ -351,12 +362,21 @@ export default function MyPage() {
             style={{ objectFit: 'contain', opacity: 0.95 }} />
         </div>
         <div style={{ background: GLASS_BG, border: `1px solid ${BORDER}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
-          <p style={{ color: ICE, lineHeight: 1.7, fontSize: 14 }}>
-            用這個帳號找不到淨灘紀錄。你報名 Luma 活動時用的可能是另一個 email？
+          <p style={{ color: ICE, lineHeight: 1.7, fontSize: 15, fontWeight: 700, marginBottom: 10 }}>
+            用這個帳號查不到淨灘紀錄
           </p>
-          <p style={{ color: MUTED, lineHeight: 1.7, fontSize: 13, marginTop: 12 }}>
-            如需協助，請寄信至{' '}
-            <a href="mailto:hi@wavenova.org" style={{ color: TEAL }}>hi@wavenova.org</a>
+          <p style={{ color: MUTED, lineHeight: 1.8, fontSize: 13 }}>
+            你報名 Luma 活動時，可能用了另一個 email。
+          </p>
+          <p style={{ color: MUTED, lineHeight: 1.8, fontSize: 13, marginTop: 8 }}>
+            先寫信到{' '}
+            <a
+              href="mailto:hi@wavenova.org?subject=WaveNova%20淨灘紀錄核對"
+              style={{ color: TEAL, textDecoration: 'underline' }}
+            >
+              hi@wavenova.org
+            </a>
+            ，附上你的姓名和報名時用的 email，我們幫你手動核對並補上紀錄。
           </p>
         </div>
         <button onClick={handleLogout} style={{
@@ -447,6 +467,14 @@ export default function MyPage() {
           <span style={{ fontSize: 10.5, color: MUTED, letterSpacing: '0.1em' }}>揪團人次</span>
         </div>
 
+        {/* Unique locations */}
+        <div style={{ flex: 1, background: CHIP_BG, border: `1px solid ${CHIP_BDR}`, borderRadius: 14, padding: '11px 8px', textAlign: 'center' }}>
+          <b style={{ display: 'block', fontFamily: "var(--font-space-grotesk,sans-serif)", fontSize: 21, color: ICE }}>
+            {summary!.unique_locations}
+          </b>
+          <span style={{ fontSize: 10.5, color: MUTED, letterSpacing: '0.1em' }}>地點</span>
+        </div>
+
         {/* Rank chip — only when there's an active session */}
         {showRankChip && (
           <div style={{ flex: 1, background: CHIP_BG, border: `1px solid ${CHIP_BDR}`, borderRadius: 14, padding: '11px 8px', textAlign: 'center' }}>
@@ -478,6 +506,14 @@ export default function MyPage() {
           ) : (
             <span style={{ fontSize: 13, color: MUTED }}>出席</span>
           )}
+        </div>
+      )}
+
+      {/* Footprint map */}
+      {mapMarkers.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: MUTED, letterSpacing: '0.15em', marginBottom: 8 }}>足跡地圖</div>
+          <FootprintMap markers={mapMarkers} />
         </div>
       )}
 
