@@ -148,7 +148,18 @@ export default function FootprintMap({ markers }: Props) {
     setSelectedKey(prev => (prev === key ? null : key));
   }, []);
 
-  if (!apiKey || markers.length === 0) return null;
+  if (!apiKey) {
+    console.warn('[FootprintMap] NEXT_PUBLIC_GOOGLE_MAPS_API_KEY is not set — map will not render');
+    return null;
+  }
+
+  if (markers.length === 0) {
+    return (
+      <div style={{ padding: '20px 0', textAlign: 'center', fontSize: 13, color: MUTED }}>
+        尚無地點資料
+      </div>
+    );
+  }
 
   return (
     <div
