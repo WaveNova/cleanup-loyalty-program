@@ -109,6 +109,21 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Unique geocoded locations
+  const { data: locRows } = await supabase
+    .from('attendances')
+    .select('events!inner ( latitude, longitude ), groups ( is_shadow )')
+    .eq('member_id', member.id)
+    .eq('checked_in', true)
+    .not('events.latitude', 'is', null);
+
+  const locationKeys = new Set(
+    ((locRows ?? []) as any[])
+      .filter((r: any) => SHOW_SHADOW || !(r.groups?.is_shadow === true))
+      .map((r: any) => `${r.events.latitude},${r.events.longitude}`),
+  );
+  const unique_locations = locationKeys.size;
+
   return NextResponse.json({
     found: true,
     name: member.name ?? user.user_metadata?.full_name ?? email,
@@ -116,6 +131,7 @@ export async function GET(req: NextRequest) {
     events_attended,
     companions_brought,
     events_with_companions,
+    unique_locations,
     rank,
     total_groups,
   });
