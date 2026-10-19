@@ -9,3 +9,6 @@ node_modules/
 *PRD*.md
 verification-report.md
 *.html
+
+# Claude Code session exports / ops SQL
+.claude-logs/
