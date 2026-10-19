@@ -7,6 +7,8 @@
  *   --event evt-xxx --mode attended-all   All guests → checked_in=true, source='backfill'
  *   --event evt-xxx --mode luma-checkin   checked_in = (checked_in_at != null), source='backfill'
  *
+ * Only guests with approval_status='approved' are backfilled (skips invited/declined/etc.)
+ *
  * Run against production:
  *   SUPABASE_URL="..." SUPABASE_SERVICE_ROLE_KEY="..." npx tsx scripts/backfill-event.ts --list-only
  */
@@ -182,8 +184,15 @@ async function runBackfill(lumaEventId: string, mode: Mode) {
   console.log(`Event DB id: ${eventId}`);
 
   console.log('Fetching guests from Luma...');
-  const guests = await getAllGuests(lumaEventId);
-  console.log(`Total guests: ${guests.length}`);
+  const allGuests = await getAllGuests(lumaEventId);
+  const guests = allGuests.filter(g => g.approval_status === 'approved');
+  if (allGuests.length > 0 && guests.length === 0) {
+    throw new Error(
+      `Luma returned ${allGuests.length} guests but 0 are approved — ` +
+      `Luma 回傳的 approval_status 可能不存在或格式改變, aborting instead of backfilling 0 guests`
+    );
+  }
+  console.log(`Total guests: ${allGuests.length} (approved: ${guests.length}, skipped: ${allGuests.length - guests.length})`);
 
   let ok = 0, fail = 0;
   for (const guest of guests) {
