@@ -59,6 +59,7 @@ export interface LumaGuest {
   email: string;
   user_api_id: string;
   checked_in_at: string | null;
+  approval_status: string;  // approved | invited | declined | pending_approval | waitlist
   check_in_qr_code: string; // https://luma.com/check-in/evt-xxx?pk=g-xxx
   event_tickets: LumaTicket[];
   event_ticket: LumaTicket | null;

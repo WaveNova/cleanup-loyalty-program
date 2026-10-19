@@ -2,6 +2,7 @@
  * Sync a single Luma event's guest list into Supabase.
  * Usage: npm run sync-event -- --event evt-k83erY5Behw6QdH
  *
+ * - Only syncs guests with approval_status='approved' (skips invited/declined/etc.)
  * - Upserts members by email (lowercase+trim)
  * - Upserts attendances (source='luma_sync', checked_in unchanged)
  * - Updates events.synced_at
@@ -147,8 +148,15 @@ async function main() {
   console.log(`Event DB id: ${eventId}`);
 
   console.log('Fetching all guests from Luma...');
-  const guests = await getAllGuests(eventIdArg);
-  console.log(`Total guests: ${guests.length}`);
+  const allGuests = await getAllGuests(eventIdArg);
+  const guests = allGuests.filter(g => g.approval_status === 'approved');
+  if (allGuests.length > 0 && guests.length === 0) {
+    throw new Error(
+      `Luma returned ${allGuests.length} guests but 0 are approved — ` +
+      `Luma 回傳的 approval_status 可能不存在或格式改變, aborting instead of syncing 0 guests`
+    );
+  }
+  console.log(`Total guests: ${allGuests.length} (approved: ${guests.length}, skipped: ${allGuests.length - guests.length})`);
 
   let ok = 0, fail = 0;
   for (const guest of guests) {
