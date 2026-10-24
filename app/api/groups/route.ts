@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { parseCapCount, sumActive, round2 } from '@/lib/caps';
 
 export const runtime = 'nodejs';
 
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabase
     .from('groups')
-    .select('id, group_no, headcount, is_shadow, weigh_sessions(weight_kg, voided)')
+    .select('id, group_no, headcount, is_shadow, weigh_sessions(weight_kg, cap_count, voided)')
     .eq('event_id', eventId)
     .eq('group_no', parseInt(groupNo))
     .maybeSingle();
@@ -31,17 +32,15 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!data)  return NextResponse.json({ error: 'group_not_found' }, { status: 404 });
 
-  const sessions: { weight_kg: number; voided: boolean }[] = (data.weigh_sessions as any) ?? [];
-  const total_weight = sessions
-    .filter(s => !s.voided)
-    .reduce((sum, s) => sum + (s.weight_kg ?? 0), 0);
+  const sessions: { weight_kg: number; cap_count: number; voided: boolean }[] = (data.weigh_sessions as any) ?? [];
 
   return NextResponse.json({
     group_id:     data.id,
     group_no:     data.group_no,
     headcount:    data.headcount,
     is_shadow:    data.is_shadow,
-    total_weight: Math.round(total_weight * 100) / 100,
+    total_weight: round2(sumActive(sessions, 'weight_kg')),
+    total_caps:   sumActive(sessions, 'cap_count'),
   });
 }
 
@@ -52,6 +51,7 @@ export async function POST(req: NextRequest) {
     event_db_id:    string;
     luma_event_id:  string;
     weight_kg:      number;
+    cap_count?:     number;
     shadow:         boolean;
     headcount:      number;
     scans:          ScanEntry[];
@@ -65,6 +65,9 @@ export async function POST(req: NextRequest) {
   if (!client_uuid || !event_db_id || weight_kg == null || !headcount || !scans?.length) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
+
+  const cap_count = parseCapCount(body.cap_count);
+  if (cap_count === null) return NextResponse.json({ error: 'invalid_cap_count' }, { status: 400 });
 
   // Idempotency: check if client_uuid already exists in weigh_sessions
   const { data: existing } = await supabase
@@ -92,7 +95,7 @@ export async function POST(req: NextRequest) {
   // Insert first weigh session
   const { data: session, error: sessErr } = await supabase
     .from('weigh_sessions')
-    .insert({ group_id, weight_kg, client_uuid })
+    .insert({ group_id, weight_kg, cap_count, client_uuid })
     .select('id')
     .single();
 
