@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback } from 'react';
 
 interface EventInfo { id: string; name: string; event_date: string; }
-interface GroupStat { group_no: number; headcount: number; total_weight: number; }
+interface GroupStat { group_no: number; headcount: number; total_weight: number; total_caps: number; }
 
 interface StatsData {
   total_weight:   number;
   group_count:    number;
   attendee_count: number;
+  total_caps:     number;
   leaderboard:    GroupStat[];
 }
 
@@ -22,6 +23,7 @@ export default function StatsPage() {
   const [stats, setStats]       = useState<StatsData | null>(null);
   const [lastAt, setLastAt]     = useState<Date | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [sortBy, setSortBy]     = useState<'weight' | 'caps'>('weight');
 
   // Check existing session — prefer httpOnly cookie, fall back to sessionStorage
   useEffect(() => {
@@ -120,8 +122,11 @@ export default function StatsPage() {
         <div style={{ fontSize: 'clamp(5rem,18vw,10rem)', fontWeight: 900, color: '#24B5CB', lineHeight: 1 }}>
           {stats.total_weight.toFixed(1)}
         </div>
-        <div style={{ color: '#fff', fontSize: '2.5rem', fontWeight: 300, marginBottom: '3rem' }}>
+        <div style={{ color: '#fff', fontSize: '2.5rem', fontWeight: 300, marginBottom: '1.5rem' }}>
           公斤
+        </div>
+        <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 'clamp(1.5rem,4vw,2.5rem)', fontWeight: 700, marginBottom: '2.5rem' }}>
+          瓶蓋 {(stats.total_caps ?? 0).toLocaleString()} 個
         </div>
         <div style={{ display: 'flex', gap: '2.5rem', justifyContent: 'center' }}>
           {stats.leaderboard.slice(0, 3).map((g, i) => (
@@ -144,6 +149,11 @@ export default function StatsPage() {
   }
 
   // ── Normal stats view ────────────────────────────────────────────────────
+
+  // API already sorts by weight; caps view re-sorts client-side (ties → weight order)
+  const sortedBoard = !stats ? [] : sortBy === 'weight'
+    ? stats.leaderboard
+    : [...stats.leaderboard].sort((a, b) => (b.total_caps ?? 0) - (a.total_caps ?? 0));
 
   return (
     <div className="page">
@@ -180,33 +190,66 @@ export default function StatsPage() {
                   <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>kg/人</div>
                 </div>
               )}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--teal)' }}>{(stats.total_caps ?? 0).toLocaleString()}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>瓶蓋</div>
+              </div>
             </div>
           </div>
 
           {/* Leaderboard */}
           {stats.leaderboard.length > 0 && (
             <div className="card">
-              <h2 style={{ marginBottom: '0.75rem' }}>排行榜</h2>
-              {stats.leaderboard.map((g, i) => (
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <h2 style={{ flex: 1 }}>排行榜</h2>
+                {(['weight', 'caps'] as const).map(k => (
+                  <button key={k}
+                    onClick={() => setSortBy(k)}
+                    style={{
+                      border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.8rem',
+                      padding: '0.25rem 0.7rem', marginLeft: '0.35rem', borderRadius: 999,
+                      background: sortBy === k ? 'var(--navy)' : 'transparent',
+                      color: sortBy === k ? '#fff' : 'var(--muted)',
+                    }}>
+                    {k === 'weight' ? '重量' : '瓶蓋'}
+                  </button>
+                ))}
+              </div>
+              {sortedBoard.map((g, i) => {
+                // caps view: no podium for groups that haven't turned in any caps yet
+                const podium = i < 3 && (sortBy === 'weight' || (g.total_caps ?? 0) > 0);
+                return (
                 <div key={g.group_no} style={{
                   display: 'flex', alignItems: 'center', gap: '0.75rem',
                   padding: '0.65rem 0',
-                  borderBottom: i < stats.leaderboard.length - 1 ? '1px solid var(--border)' : 'none',
-                  background: i < 3 ? (i === 0 ? '#FFFBEB' : i === 1 ? '#F8FAFC' : '#FEFCE8') : 'transparent',
+                  borderBottom: i < sortedBoard.length - 1 ? '1px solid var(--border)' : 'none',
+                  background: podium ? (i === 0 ? '#FFFBEB' : i === 1 ? '#F8FAFC' : '#FEFCE8') : 'transparent',
                   borderRadius: 8, paddingLeft: '0.5rem',
                 }}>
                   <div style={{ fontSize: '1.4rem', width: 32, textAlign: 'center' }}>
-                    {i < 3 ? MEDALS[i] : <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>#{i + 1}</span>}
+                    {podium ? MEDALS[i] : <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>#{i + 1}</span>}
                   </div>
                   <div style={{ flex: 1 }}>
                     <span style={{ fontWeight: 700 }}>第 {g.group_no} 組</span>
                     <span className="text-muted" style={{ marginLeft: 8, fontSize: '0.8rem' }}>{g.headcount} 人</span>
                   </div>
-                  <div style={{ fontWeight: 800, color: i === 0 ? '#B45309' : 'var(--navy)', fontSize: '1.05rem' }}>
-                    {g.total_weight.toFixed(1)} kg
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{
+                      fontWeight: 800, fontSize: sortBy === 'weight' ? '1.05rem' : '0.85rem',
+                      color: sortBy === 'weight' ? (i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
+                    }}>
+                      {g.total_weight.toFixed(1)} kg
+                    </div>
+                    <div style={{
+                      fontWeight: sortBy === 'caps' ? 800 : 400, fontSize: sortBy === 'caps' ? '1.05rem' : '0.8rem',
+                      color: sortBy === 'caps' ? (podium && i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
+                    }}>
+                      瓶蓋 {(g.total_caps ?? 0).toLocaleString()}
+                    </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
