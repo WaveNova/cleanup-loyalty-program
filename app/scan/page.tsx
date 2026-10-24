@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import QrScanner from 'qr-scanner';
+import { CAP_MAX } from '@/lib/caps';
 
 const SHADOW = process.env.NEXT_PUBLIC_SHADOW_MODE === 'true';
 
@@ -18,10 +19,10 @@ interface ScanEntry {
   actual_count: number;
 }
 
-interface GroupResult   { group_no: number; headcount: number; weight_kg: number; session_id: string; }
-interface GroupInfo     { group_id: string; group_no: number; headcount: number; total_weight: number; }
+interface GroupResult   { group_no: number; headcount: number; weight_kg: number; cap_count: number; session_id: string; }
+interface GroupInfo     { group_id: string; group_no: number; headcount: number; total_weight: number; total_caps?: number; }
 interface Toast         { msg: string; type: 'ok' | 'err' | 'info'; }
-interface RecentSession { id: string; group_id: string; group_no: number; weight_kg: number; voided: boolean; created_at: string; }
+interface RecentSession { id: string; group_id: string; group_no: number; weight_kg: number; cap_count?: number; voided: boolean; created_at: string; }
 interface Member        { name: string | null; email: string | null; }
 
 type Mode        = 'home' | 'checkin' | 'reweigh' | 'addmember' | 'movegroup' | 'lookup';
@@ -38,6 +39,7 @@ interface CheckinQueueItem {
   event_db_id:    string;
   luma_event_id:  string;
   weight_kg:      number;
+  cap_count?:     number;   // optional: items queued before v3.7 have none (server treats as 0)
   shadow:         boolean;
   headcount:      number;
   scans:          ScanEntry[];
@@ -50,6 +52,7 @@ interface ReweighQueueItem {
   event_db_id:  string;
   group_no:     number;
   weight_kg:    number;
+  cap_count?:   number;
 }
 
 type QueueItem = CheckinQueueItem | ReweighQueueItem;
@@ -81,6 +84,36 @@ function nextLocalGroupNo(eid: string): number {
   return ns.length ? Math.max(...ns) + 1 : 1;
 }
 
+// ── Bottle caps (v3.7) ───────────────────────────────────────────────────────
+
+// Blank = 0; otherwise a whole number 0–CAP_MAX (same rule as lib/caps parseCapCount)
+function capsError(c: string): string | null {
+  const t = c.trim();
+  if (t === '') return null;
+  if (!/^\d+$/.test(t)) return '請輸入 0 以上的整數';
+  if (parseInt(t, 10) > CAP_MAX) return `最多 ${CAP_MAX.toLocaleString()} 個`;
+  return null;
+}
+function parseCaps(c: string): number { return c.trim() === '' ? 0 : parseInt(c.trim(), 10); }
+
+// type="text" (not "number") so invalid input like "-" or "1e" isn't silently read as blank
+function CapsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const err = capsError(value);
+  return (
+    <>
+      <label style={{ marginTop: '0.75rem' }}>瓶蓋數量（個）</label>
+      <input
+        type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="0（選填）"
+        style={{ fontSize: '1.5rem', fontWeight: 700, textAlign: 'center' }}
+      />
+      {err && <p className="text-red mt-1">{err}</p>}
+    </>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function ScanPage() {
@@ -99,6 +132,7 @@ export default function ScanPage() {
   // ── check-in
   const [ciScans, setCiScans]           = useState<ScanEntry[]>([]);
   const [ciWeight, setCiWeight]         = useState('');
+  const [ciCaps, setCiCaps]             = useState('');
   const [ciResolving, setCiResolving]   = useState(false);
   const [ciSubmitting, setCiSubmitting] = useState(false);
   const [ciResult, setCiResult]         = useState<GroupResult | null>(null);
@@ -111,9 +145,11 @@ export default function ScanPage() {
   const [rwGroupNo, setRwGroupNo]         = useState('');
   const [rwGroupInfo, setRwGroupInfo]     = useState<GroupInfo | null>(null);
   const [rwWeight, setRwWeight]           = useState('');
+  const [rwCaps, setRwCaps]               = useState('');
   const [rwStep, setRwStep]               = useState<ReweighStep>('input');
   const [rwSubmitting, setRwSubmitting]   = useState(false);
   const [rwNewTotal, setRwNewTotal]       = useState<number | null>(null);
+  const [rwNewCapTotal, setRwNewCapTotal] = useState(0);
   const [rwLoading, setRwLoading]         = useState(false);
   const [rwMembersOpen, setRwMembersOpen] = useState(false);
   const [rwMembers, setRwMembers]         = useState<Member[]>([]);
@@ -123,6 +159,7 @@ export default function ScanPage() {
   const [recentSessions, setRecentSessions]   = useState<RecentSession[]>([]);
   const [editingId, setEditingId]             = useState<string | null>(null);
   const [editingWeight, setEditingWeight]     = useState('');
+  const [editingCaps, setEditingCaps]         = useState('');
   const [editSubmitting, setEditSubmitting]   = useState(false);
 
   // ── Feature A — 補掃入組
@@ -189,12 +226,12 @@ export default function ScanPage() {
 
   // ── reset helpers
   function resetCheckin() {
-    setCiScans([]); setCiWeight(''); setCiResult(null); setCiSearchQ('');
+    setCiScans([]); setCiWeight(''); setCiCaps(''); setCiResult(null); setCiSearchQ('');
   }
 
   function resetReweigh() {
-    setRwGroupNo(''); setRwGroupInfo(null); setRwWeight('');
-    setRwStep('input'); setRwNewTotal(null);
+    setRwGroupNo(''); setRwGroupInfo(null); setRwWeight(''); setRwCaps('');
+    setRwStep('input'); setRwNewTotal(null); setRwNewCapTotal(0);
     setRwMembersOpen(false); setRwMembers([]);
   }
 
@@ -229,12 +266,12 @@ export default function ScanPage() {
   }
 
   async function handleEditSubmit(sessionId: string) {
-    if (!isValidWeight(editingWeight)) return;
+    if (!isValidWeight(editingWeight) || capsError(editingCaps)) return;
     setEditSubmitting(true);
     try {
       await fetch('/api/weigh', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, weight_kg: parseFloat(editingWeight) }),
+        body: JSON.stringify({ session_id: sessionId, weight_kg: parseFloat(editingWeight), cap_count: parseCaps(editingCaps) }),
       });
       setEditingId(null);
       if (event) loadRecentSessions(event);
@@ -530,9 +567,11 @@ export default function ScanPage() {
     if (!event) return;
     if (!isValidWeight(ciWeight)) { showToast('請輸入重量（可為 0）', 'err'); return; }
     if (ciScans.length === 0) { showToast('請先掃描 QR', 'err'); return; }
+    if (capsError(ciCaps)) { showToast('瓶蓋數量格式錯誤', 'err'); return; }
 
     const headcount   = ciScans.reduce((s, e) => s + e.actual_count, 0);
     const weight_kg   = parseFloat(ciWeight);
+    const cap_count   = parseCaps(ciCaps);
     const client_uuid = crypto.randomUUID();
     setCiSubmitting(true);
 
@@ -541,14 +580,14 @@ export default function ScanPage() {
       const item: CheckinQueueItem = {
         type: 'checkin', client_uuid,
         event_db_id: event.id, luma_event_id: event.luma_event_id,
-        weight_kg, shadow: SHADOW, headcount, scans: ciScans, local_group_no,
+        weight_kg, cap_count, shadow: SHADOW, headcount, scans: ciScans, local_group_no,
       };
       const q = loadQueue(); q.push(item); saveQueue(q);
       const cache = loadGroupCache(event.id);
-      cache[local_group_no] = { group_id: client_uuid, group_no: local_group_no, headcount, total_weight: weight_kg };
+      cache[local_group_no] = { group_id: client_uuid, group_no: local_group_no, headcount, total_weight: weight_kg, total_caps: cap_count };
       saveGroupCache(event.id, cache);
       setQueueLen(loadQueue().length);
-      setCiResult({ group_no: local_group_no, headcount, weight_kg, session_id: client_uuid });
+      setCiResult({ group_no: local_group_no, headcount, weight_kg, cap_count, session_id: client_uuid });
       setCiSubmitting(false);
       stopScanner();
       return;
@@ -557,14 +596,14 @@ export default function ScanPage() {
     try {
       const res = await fetch('/api/groups', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_uuid, event_db_id: event.id, luma_event_id: event.luma_event_id, weight_kg, shadow: SHADOW, headcount, scans: ciScans }),
+        body: JSON.stringify({ client_uuid, event_db_id: event.id, luma_event_id: event.luma_event_id, weight_kg, cap_count, shadow: SHADOW, headcount, scans: ciScans }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       const cache = loadGroupCache(event.id);
-      cache[data.group_no] = { group_id: data.group_id, group_no: data.group_no, headcount, total_weight: weight_kg };
+      cache[data.group_no] = { group_id: data.group_id, group_no: data.group_no, headcount, total_weight: weight_kg, total_caps: cap_count };
       saveGroupCache(event.id, cache);
-      setCiResult({ group_no: data.group_no, headcount, weight_kg, session_id: data.session_id });
+      setCiResult({ group_no: data.group_no, headcount, weight_kg, cap_count, session_id: data.session_id });
       stopScanner();
     } catch (e: any) {
       showToast('上傳失敗：' + e.message, 'err');
@@ -602,20 +641,28 @@ export default function ScanPage() {
   async function handleRwSubmit() {
     if (!event || !rwGroupInfo) return;
     if (!isValidWeight(rwWeight)) { showToast('請輸入重量（可為 0）', 'err'); return; }
+    if (capsError(rwCaps)) { showToast('瓶蓋數量格式錯誤', 'err'); return; }
 
     const weight_kg   = parseFloat(rwWeight);
+    const cap_count   = parseCaps(rwCaps);
+    const prevCaps    = rwGroupInfo.total_caps ?? 0;
     const client_uuid = crypto.randomUUID();
     setRwSubmitting(true);
 
     if (!online) {
       const q = loadQueue();
-      q.push({ type: 'reweigh', client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg });
+      q.push({ type: 'reweigh', client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg, cap_count });
       saveQueue(q);
       const cache = loadGroupCache(event.id);
       const g = cache[rwGroupInfo.group_no];
-      if (g) { g.total_weight = +(g.total_weight + weight_kg).toFixed(2); saveGroupCache(event.id, cache); }
+      if (g) {
+        g.total_weight = +(g.total_weight + weight_kg).toFixed(2);
+        g.total_caps   = (g.total_caps ?? 0) + cap_count;
+        saveGroupCache(event.id, cache);
+      }
       setQueueLen(loadQueue().length);
       setRwNewTotal(+(rwGroupInfo.total_weight + weight_kg).toFixed(2));
+      setRwNewCapTotal(prevCaps + cap_count);
       setRwStep('done');
       setRwSubmitting(false);
       return;
@@ -624,14 +671,16 @@ export default function ScanPage() {
     try {
       const res = await fetch('/api/weigh', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg }),
+        body: JSON.stringify({ client_uuid, event_db_id: event.id, group_no: rwGroupInfo.group_no, weight_kg, cap_count }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      const newCapTotal = data.new_cap_total ?? prevCaps + cap_count;
       const cache = loadGroupCache(event.id);
       const g = cache[rwGroupInfo.group_no];
-      if (g) { g.total_weight = data.new_total; saveGroupCache(event.id, cache); }
+      if (g) { g.total_weight = data.new_total; g.total_caps = newCapTotal; saveGroupCache(event.id, cache); }
       setRwNewTotal(data.new_total);
+      setRwNewCapTotal(newCapTotal);
       setRwStep('done');
     } catch (e: any) {
       showToast('上傳失敗：' + e.message, 'err');
@@ -1040,7 +1089,7 @@ export default function ScanPage() {
             {ciResult.group_no}
           </div>
           <div style={{ color: '#fff', fontSize: '1.1rem', marginTop: '1rem', textAlign: 'center' }}>
-            👥 {ciResult.headcount} 人 &nbsp;·&nbsp; 首磅 {ciResult.weight_kg} kg
+            👥 {ciResult.headcount} 人 &nbsp;·&nbsp; 首磅 {ciResult.weight_kg} kg &nbsp;·&nbsp; 瓶蓋 {ciResult.cap_count} 個
           </div>
           {!online && (
             <div style={{ color: '#F59E0B', fontSize: '0.8rem', marginTop: '0.35rem' }}>
@@ -1111,7 +1160,7 @@ export default function ScanPage() {
             {recentSessions.map(s => (
               <div key={s.id} style={{ padding: '0.45rem 0', borderTop: '1px solid var(--border)' }}>
                 {editingId === s.id ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.85rem', color: 'var(--muted)', flex: '0 0 auto' }}>第 {s.group_no} 組</span>
                     <input
                       type="number" inputMode="decimal" step="0.1" min="0"
@@ -1123,9 +1172,20 @@ export default function ScanPage() {
                       onKeyDown={e => e.key === 'Enter' && handleEditSubmit(s.id)}
                     />
                     <span style={{ fontSize: '0.82rem' }}>kg</span>
+                    <input
+                      type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off"
+                      value={editingCaps}
+                      onChange={e => setEditingCaps(e.target.value)}
+                      placeholder="0"
+                      aria-label="瓶蓋數量"
+                      style={{ width: 64, fontSize: '0.9rem', minHeight: 34, textAlign: 'center',
+                               borderColor: capsError(editingCaps) ? 'var(--red)' : undefined }}
+                      onKeyDown={e => e.key === 'Enter' && handleEditSubmit(s.id)}
+                    />
+                    <span style={{ fontSize: '0.82rem' }}>瓶蓋</span>
                     <button className="btn btn-primary" style={{ fontSize: '0.75rem', minHeight: 34, padding: '0 0.65rem', flex: '0 0 auto' }}
                       onClick={() => handleEditSubmit(s.id)}
-                      disabled={editSubmitting || !isValidWeight(editingWeight)}>
+                      disabled={editSubmitting || !isValidWeight(editingWeight) || !!capsError(editingCaps)}>
                       確認
                     </button>
                     <button className="btn btn-ghost" style={{ fontSize: '0.75rem', minHeight: 34, padding: '0 0.65rem', flex: '0 0 auto' }}
@@ -1142,6 +1202,9 @@ export default function ScanPage() {
                       textDecoration: s.voided ? 'line-through' : 'none',
                     }}>
                       {s.weight_kg} kg
+                      <span style={{ fontWeight: 400, color: s.voided ? '#9CA3AF' : 'var(--muted)', fontSize: '0.8rem' }}>
+                        &nbsp;·&nbsp;瓶蓋 {s.cap_count ?? 0}
+                      </span>
                     </span>
                     {s.voided
                       ? <span style={{ fontSize: '0.75rem', color: '#9CA3AF' }}>已撤銷</span>
@@ -1149,7 +1212,7 @@ export default function ScanPage() {
                         <>
                           <button
                             style={{ background: 'none', border: 'none', color: 'var(--teal)', fontSize: '0.8rem', cursor: 'pointer', padding: '0.2rem 0.4rem' }}
-                            onClick={() => { setEditingId(s.id); setEditingWeight(String(s.weight_kg)); }}>
+                            onClick={() => { setEditingId(s.id); setEditingWeight(String(s.weight_kg)); setEditingCaps(String(s.cap_count ?? 0)); }}>
                             編輯
                           </button>
                           <button
@@ -1196,6 +1259,7 @@ export default function ScanPage() {
                 {ciHeadcount} 人 → 每人 <strong>{ciKgPerPerson} kg</strong>
               </p>
             )}
+            <CapsField value={ciCaps} onChange={setCiCaps} />
           </div>
 
           <div className="card">
@@ -1279,7 +1343,7 @@ export default function ScanPage() {
             className="btn btn-navy"
             style={{ marginBottom: '2rem' }}
             onClick={handleCheckinSubmit}
-            disabled={ciScans.length === 0 || !isValidWeight(ciWeight) || ciSubmitting}
+            disabled={ciScans.length === 0 || !isValidWeight(ciWeight) || !!capsError(ciCaps) || ciSubmitting}
           >
             {ciSubmitting ? '上傳中…' : '送出 → 取得組號'}
           </button>
@@ -1335,6 +1399,9 @@ export default function ScanPage() {
                 <div style={{ marginTop: '0.75rem', fontWeight: 600 }}>
                   👥 {rwGroupInfo.headcount} 人 &nbsp;·&nbsp; 已累計 <strong>{rwGroupInfo.total_weight.toFixed(1)} kg</strong>
                 </div>
+                <div style={{ marginTop: '0.25rem', fontSize: '0.9rem' }}>
+                  已累計瓶蓋 <strong>{rwGroupInfo.total_caps ?? 0}</strong> 個
+                </div>
                 <div style={{ borderTop: '1px solid #BFDBFE', marginTop: '0.75rem', paddingTop: '0.5rem' }}>
                   <button
                     style={{ background: 'none', border: 'none', color: 'var(--teal)', cursor: 'pointer', fontSize: '0.82rem', padding: '0.2rem 0' }}
@@ -1380,16 +1447,17 @@ export default function ScanPage() {
                   // eslint-disable-next-line jsx-a11y/no-autofocus
                   autoFocus
                 />
+                <CapsField value={rwCaps} onChange={setRwCaps} />
               </div>
 
               <div className="row gap-1 mb-2">
                 <button className="btn btn-ghost grow"
-                  onClick={() => { setRwStep('input'); setRwWeight(''); }}>
+                  onClick={() => { setRwStep('input'); setRwWeight(''); setRwCaps(''); }}>
                   ← 改組號
                 </button>
                 <button className="btn btn-navy grow"
                   onClick={handleRwSubmit}
-                  disabled={!isValidWeight(rwWeight) || rwSubmitting}>
+                  disabled={!isValidWeight(rwWeight) || !!capsError(rwCaps) || rwSubmitting}>
                   {rwSubmitting ? '上傳中…' : '確認回秤'}
                 </button>
               </div>
@@ -1402,6 +1470,9 @@ export default function ScanPage() {
               <div style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>第 {rwGroupInfo.group_no} 組 · 累計</div>
               <div style={{ fontSize: '3rem', fontWeight: 900, color: 'var(--navy)', margin: '0.25rem 0' }}>
                 {rwNewTotal.toFixed(1)} <span style={{ fontSize: '1.2rem', fontWeight: 400 }}>kg</span>
+              </div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '0.25rem' }}>
+                瓶蓋 {rwNewCapTotal} 個
               </div>
               <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
                 {rwGroupInfo.headcount} 人 → 每人 {(rwNewTotal / rwGroupInfo.headcount).toFixed(1)} kg
@@ -1836,6 +1907,7 @@ export default function ScanPage() {
                     <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>組</div>
                     <div style={{ marginTop: '0.5rem', fontWeight: 600 }}>
                       👥 {lkGroupInfo.headcount} 人 &nbsp;·&nbsp; 累計 <strong>{lkGroupInfo.total_weight.toFixed(1)} kg</strong>
+                      &nbsp;·&nbsp; 瓶蓋 <strong>{lkGroupInfo.total_caps ?? 0}</strong> 個
                     </div>
                   </div>
                   <div style={{ borderTop: '1px solid #BFDBFE', paddingTop: '0.5rem' }}>
@@ -1889,7 +1961,7 @@ export default function ScanPage() {
                     <div style={{ marginTop: '0.75rem' }}>
                       <span style={{ fontWeight: 600 }}>第 <strong style={{ fontSize: '1.3rem', color: 'var(--navy)' }}>{lkPersonResult.group_no}</strong> 組</span>
                       <span style={{ color: 'var(--muted)', marginLeft: 12, fontSize: '0.9rem' }}>
-                        {lkPersonResult.groupInfo.headcount} 人 &nbsp;·&nbsp; 累計 {lkPersonResult.groupInfo.total_weight.toFixed(1)} kg
+                        {lkPersonResult.groupInfo.headcount} 人 &nbsp;·&nbsp; 累計 {lkPersonResult.groupInfo.total_weight.toFixed(1)} kg &nbsp;·&nbsp; 瓶蓋 {lkPersonResult.groupInfo.total_caps ?? 0} 個
                       </span>
                     </div>
                   ) : (

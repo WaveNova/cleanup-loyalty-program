@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback } from 'react';
 
 interface EventInfo { id: string; name: string; event_date: string; }
-interface GroupStat { group_no: number; headcount: number; total_weight: number; }
+interface GroupStat { group_no: number; headcount: number; total_weight: number; total_caps: number; }
 
 interface StatsData {
   total_weight:   number;
   group_count:    number;
   attendee_count: number;
+  total_caps:     number;
   leaderboard:    GroupStat[];
 }
 
@@ -22,6 +23,7 @@ export default function StatsPage() {
   const [stats, setStats]       = useState<StatsData | null>(null);
   const [lastAt, setLastAt]     = useState<Date | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [sortBy, setSortBy]     = useState<'weight' | 'caps'>('weight');
 
   // Check existing session — prefer httpOnly cookie, fall back to sessionStorage
   useEffect(() => {
@@ -145,6 +147,11 @@ export default function StatsPage() {
 
   // ── Normal stats view ────────────────────────────────────────────────────
 
+  // API already sorts by weight; caps view re-sorts client-side (ties → weight order)
+  const sortedBoard = !stats ? [] : sortBy === 'weight'
+    ? stats.leaderboard
+    : [...stats.leaderboard].sort((a, b) => (b.total_caps ?? 0) - (a.total_caps ?? 0));
+
   return (
     <div className="page">
       <div className="status-bar">
@@ -180,18 +187,36 @@ export default function StatsPage() {
                   <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>kg/人</div>
                 </div>
               )}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--teal)' }}>{(stats.total_caps ?? 0).toLocaleString()}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>瓶蓋</div>
+              </div>
             </div>
           </div>
 
           {/* Leaderboard */}
           {stats.leaderboard.length > 0 && (
             <div className="card">
-              <h2 style={{ marginBottom: '0.75rem' }}>排行榜</h2>
-              {stats.leaderboard.map((g, i) => (
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <h2 style={{ flex: 1 }}>排行榜</h2>
+                {(['weight', 'caps'] as const).map(k => (
+                  <button key={k}
+                    onClick={() => setSortBy(k)}
+                    style={{
+                      border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.8rem',
+                      padding: '0.25rem 0.7rem', marginLeft: '0.35rem', borderRadius: 999,
+                      background: sortBy === k ? 'var(--navy)' : 'transparent',
+                      color: sortBy === k ? '#fff' : 'var(--muted)',
+                    }}>
+                    {k === 'weight' ? '重量' : '瓶蓋'}
+                  </button>
+                ))}
+              </div>
+              {sortedBoard.map((g, i) => (
                 <div key={g.group_no} style={{
                   display: 'flex', alignItems: 'center', gap: '0.75rem',
                   padding: '0.65rem 0',
-                  borderBottom: i < stats.leaderboard.length - 1 ? '1px solid var(--border)' : 'none',
+                  borderBottom: i < sortedBoard.length - 1 ? '1px solid var(--border)' : 'none',
                   background: i < 3 ? (i === 0 ? '#FFFBEB' : i === 1 ? '#F8FAFC' : '#FEFCE8') : 'transparent',
                   borderRadius: 8, paddingLeft: '0.5rem',
                 }}>
@@ -202,8 +227,19 @@ export default function StatsPage() {
                     <span style={{ fontWeight: 700 }}>第 {g.group_no} 組</span>
                     <span className="text-muted" style={{ marginLeft: 8, fontSize: '0.8rem' }}>{g.headcount} 人</span>
                   </div>
-                  <div style={{ fontWeight: 800, color: i === 0 ? '#B45309' : 'var(--navy)', fontSize: '1.05rem' }}>
-                    {g.total_weight.toFixed(1)} kg
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{
+                      fontWeight: 800, fontSize: sortBy === 'weight' ? '1.05rem' : '0.85rem',
+                      color: sortBy === 'weight' ? (i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
+                    }}>
+                      {g.total_weight.toFixed(1)} kg
+                    </div>
+                    <div style={{
+                      fontWeight: sortBy === 'caps' ? 800 : 400, fontSize: sortBy === 'caps' ? '1.05rem' : '0.8rem',
+                      color: sortBy === 'caps' ? (i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
+                    }}>
+                      瓶蓋 {(g.total_caps ?? 0).toLocaleString()}
+                    </div>
                   </div>
                 </div>
               ))}
