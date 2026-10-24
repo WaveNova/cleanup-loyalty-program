@@ -122,8 +122,11 @@ export default function StatsPage() {
         <div style={{ fontSize: 'clamp(5rem,18vw,10rem)', fontWeight: 900, color: '#24B5CB', lineHeight: 1 }}>
           {stats.total_weight.toFixed(1)}
         </div>
-        <div style={{ color: '#fff', fontSize: '2.5rem', fontWeight: 300, marginBottom: '3rem' }}>
+        <div style={{ color: '#fff', fontSize: '2.5rem', fontWeight: 300, marginBottom: '1.5rem' }}>
           公斤
+        </div>
+        <div style={{ color: 'rgba(255,255,255,0.85)', fontSize: 'clamp(1.5rem,4vw,2.5rem)', fontWeight: 700, marginBottom: '2.5rem' }}>
+          瓶蓋 {(stats.total_caps ?? 0).toLocaleString()} 個
         </div>
         <div style={{ display: 'flex', gap: '2.5rem', justifyContent: 'center' }}>
           {stats.leaderboard.slice(0, 3).map((g, i) => (
@@ -212,16 +215,19 @@ export default function StatsPage() {
                   </button>
                 ))}
               </div>
-              {sortedBoard.map((g, i) => (
+              {sortedBoard.map((g, i) => {
+                // caps view: no podium for groups that haven't turned in any caps yet
+                const podium = i < 3 && (sortBy === 'weight' || (g.total_caps ?? 0) > 0);
+                return (
                 <div key={g.group_no} style={{
                   display: 'flex', alignItems: 'center', gap: '0.75rem',
                   padding: '0.65rem 0',
                   borderBottom: i < sortedBoard.length - 1 ? '1px solid var(--border)' : 'none',
-                  background: i < 3 ? (i === 0 ? '#FFFBEB' : i === 1 ? '#F8FAFC' : '#FEFCE8') : 'transparent',
+                  background: podium ? (i === 0 ? '#FFFBEB' : i === 1 ? '#F8FAFC' : '#FEFCE8') : 'transparent',
                   borderRadius: 8, paddingLeft: '0.5rem',
                 }}>
                   <div style={{ fontSize: '1.4rem', width: 32, textAlign: 'center' }}>
-                    {i < 3 ? MEDALS[i] : <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>#{i + 1}</span>}
+                    {podium ? MEDALS[i] : <span style={{ color: 'var(--muted)', fontSize: '0.9rem' }}>#{i + 1}</span>}
                   </div>
                   <div style={{ flex: 1 }}>
                     <span style={{ fontWeight: 700 }}>第 {g.group_no} 組</span>
@@ -236,13 +242,14 @@ export default function StatsPage() {
                     </div>
                     <div style={{
                       fontWeight: sortBy === 'caps' ? 800 : 400, fontSize: sortBy === 'caps' ? '1.05rem' : '0.8rem',
-                      color: sortBy === 'caps' ? (i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
+                      color: sortBy === 'caps' ? (podium && i === 0 ? '#B45309' : 'var(--navy)') : 'var(--muted)',
                     }}>
                       瓶蓋 {(g.total_caps ?? 0).toLocaleString()}
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

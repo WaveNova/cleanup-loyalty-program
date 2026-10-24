@@ -4,12 +4,14 @@ import { parseCapCount, sumActive, round2 } from '@/lib/caps';
 
 export const runtime = 'nodejs';
 
-// Non-voided totals for a group, returned after every write
+// Non-voided totals for a group, returned after every write.
+// On a read error return nulls (not 0) so the client falls back to its own running total.
 async function groupTotals(groupId: string) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('weigh_sessions')
     .select('weight_kg, cap_count, voided')
     .eq('group_id', groupId);
+  if (error) return { new_total: null, new_cap_total: null };
   return {
     new_total:     round2(sumActive(data, 'weight_kg')),
     new_cap_total: sumActive(data, 'cap_count'),

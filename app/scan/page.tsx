@@ -257,11 +257,32 @@ export default function ScanPage() {
     setRwMembersLoading(false);
   }
 
+  // Keep the offline group cache in step with server totals after edits / voids / lookups
+  function syncCacheTotals(groupNo: number, total_weight?: number | null, total_caps?: number | null) {
+    if (!event) return;
+    const cache = loadGroupCache(event.id);
+    const g = cache[groupNo];
+    if (!g) return;
+    if (total_weight != null) g.total_weight = total_weight;
+    if (total_caps != null) g.total_caps = total_caps;
+    saveGroupCache(event.id, cache);
+  }
+
+  async function refreshCachedGroup(groupNo: number) {
+    if (!event) return;
+    try {
+      const res = await fetch(`/api/groups?event_id=${event.id}&group_no=${groupNo}`);
+      if (res.ok) { const gi: GroupInfo = await res.json(); syncCacheTotals(groupNo, gi.total_weight, gi.total_caps); }
+    } catch {}
+  }
+
   async function handleVoidSession(sessionId: string) {
+    const groupNo = recentSessions.find(s => s.id === sessionId)?.group_no;
     await fetch('/api/weigh', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId }),
     });
+    if (groupNo != null) refreshCachedGroup(groupNo);
     if (event) loadRecentSessions(event);
   }
 
@@ -269,13 +290,19 @@ export default function ScanPage() {
     if (!isValidWeight(editingWeight) || capsError(editingCaps)) return;
     setEditSubmitting(true);
     try {
-      await fetch('/api/weigh', {
+      const res = await fetch('/api/weigh', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, weight_kg: parseFloat(editingWeight), cap_count: parseCaps(editingCaps) }),
       });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? res.status);
+      const data = await res.json();
+      const groupNo = recentSessions.find(s => s.id === sessionId)?.group_no;
+      if (groupNo != null) syncCacheTotals(groupNo, data.new_total, data.new_cap_total);
       setEditingId(null);
       if (event) loadRecentSessions(event);
-    } catch {}
+    } catch (e: any) {
+      showToast('修改失敗：' + e.message, 'err');
+    }
     setEditSubmitting(false);
   }
 
@@ -623,7 +650,9 @@ export default function ScanPage() {
         const res = await fetch(`/api/groups?event_id=${event.id}&group_no=${no}`);
         if (res.status === 404) { showToast('查無此組號', 'err'); setRwLoading(false); return; }
         if (res.ok) {
-          setRwGroupInfo(await res.json());
+          const gi: GroupInfo = await res.json();
+          syncCacheTotals(no, gi.total_weight, gi.total_caps);
+          setRwGroupInfo(gi);
           setRwStep('confirm');
           setRwLoading(false);
           return;
@@ -675,11 +704,10 @@ export default function ScanPage() {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      const newTotal    = data.new_total ?? +(rwGroupInfo.total_weight + weight_kg).toFixed(2);
       const newCapTotal = data.new_cap_total ?? prevCaps + cap_count;
-      const cache = loadGroupCache(event.id);
-      const g = cache[rwGroupInfo.group_no];
-      if (g) { g.total_weight = data.new_total; g.total_caps = newCapTotal; saveGroupCache(event.id, cache); }
-      setRwNewTotal(data.new_total);
+      syncCacheTotals(rwGroupInfo.group_no, newTotal, newCapTotal);
+      setRwNewTotal(newTotal);
       setRwNewCapTotal(newCapTotal);
       setRwStep('done');
     } catch (e: any) {
